@@ -1,4 +1,4 @@
-# PySide6 UX Prototype — entry point
+﻿# PySide6 UX Prototype â€” entry point
 # Original app logic preserved in reminder_dialog.py, chrome_dialog.py,
 # focus_guard.py, focus_guard_chrome_trigger.py (untouched).
 
@@ -8,53 +8,60 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from PySide6.QtWidgets import (
-    QApplication, QDialog, QMainWindow, QMessageBox,
-    QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QPushButton, QLabel,
+from PySide6.QtWidgets import QApplication, QMessageBox
+from styles.theme import GLOBAL_QSS
+from services.browser_session import BrowserSessionManager, ExtensionHeartbeatMonitor
+from services.browser_session_api_server import BrowserSessionApiServer
+from services.settings_schemas import build_purity_settings_manager, resolve_purity_data_root
+from services.web_requests import submit_show_app_request
+from shane_common.watchdog.heartbeat_reader import HeartbeatReader
+from ui.main_window import (
+    MainWindow,
+    _append_startup_log,
+    _launch_supervisor,
+    _SUPERVISOR_STALE_S,
+    _SUPERVISOR_DEAD_S,
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QIcon
-from styles.theme import (
-    GLOBAL_QSS, COLOR_ACCENT, COLOR_ACCENT_LIGHT, COLOR_SURFACE, COLOR_BORDER,
-    COLOR_TEXT, COLOR_TEXT_MUTED, COLOR_BACKGROUND, COLOR_SURFACE_2,
-    FONT_FAMILY, FONT_SIZE_SMALL, FONT_SIZE_NORMAL, FONT_SIZE_MEDIUM, FONT_SIZE_LARGE,
-)
-from services.mock_state import MockAppState
-from services.notes_setup import notes_writer, notes_repo
-from ui.reflection.dashboard import ReflectionDashboard
-from ui.intervention.popup_manager import PopupManager
-from ui.intervention.web_popup import WebPopup
-from services.web_watcher import WebWatcherService
-from services.web_requests import (
-    append_web_request_log,
-    mark_web_launch_request_done,
-    read_pending_web_launch_requests,
-    write_launcher_approved_marker,
-)
-from ui.review.review_window import ReviewWindow
 from ui.notes_context_menu import NotesContextMenuFilter
-from ui.notes.note_dialog import NoteDialog
-from ui.notes.notes_browser_window import NotesBrowserWindow
-from gui.log_normalizer_sink import PurityLogNormalizerSink
-from gui.log_viewer_window import PurityLogViewerWindow
 
-_POPUP_BUTTONS = [
-    ("Fire: Web",     "web"),
-    ("Fire: Prayer",  "prayer"),
-    ("Fire: Risk",    "risk"),
-    ("Fire: Hourly",  "hourly"),
-    ("Fire: Evening", "evening"),
-]
+# ---------------------------------------------------------------------------
+# App-wide paths
+# ---------------------------------------------------------------------------
+DATA_ROOT = Path("G:/PURITY_APP")
 
-# Browsers the user is allowed to open. All others are blocked immediately.
-# Hardcoded until the config mechanism is integrated.
-_PERMITTED_BROWSERS: frozenset[str] = frozenset({'chrome.exe'})
+# ---------------------------------------------------------------------------
+# Singleton guard â€” Windows named mutex
+# ---------------------------------------------------------------------------
+_SINGLETON_MUTEX_NAME = "Local\\PurityApp_Singleton"
+_singleton_mutex_handle = None  # set by _try_acquire_singleton_mutex, cleared in _on_quit
 
-_CHROME_PATHS = [
-    Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-    Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-    Path.home() / r"AppData\Local\Google\Chrome\Application\chrome.exe",
-]
+
+def _try_acquire_singleton_mutex() -> bool:
+    """Try to acquire the named Windows mutex that marks this as the running instance.
+
+    Returns True  -- we are the first/only instance (mutex freshly acquired).
+    Returns False -- another instance already holds the mutex.
+    Falls back to True on any error (fail-open) so startup is never blocked.
+    """
+    global _singleton_mutex_handle
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.CreateMutexW(None, 1, _SINGLETON_MUTEX_NAME)
+        err = ctypes.get_last_error()
+        if handle and err == 183:  # ERROR_ALREADY_EXISTS â€” another instance owns it
+            kernel32.CloseHandle(handle)
+            return False
+        if handle:
+            _singleton_mutex_handle = handle
+            return True
+        return True  # CreateMutexW returned NULL â€” unusual, fail open
+    except Exception:
+        return True  # fail open
 
 
 def _is_pid_running(pid: object) -> bool:
@@ -120,12 +127,13 @@ def _find_running_instance(data_root):
     heartbeat, mtime, exit_present = client.heartbeat_reader.read("purity_app")
     if heartbeat is None or mtime is None:
         return None
-    if client.heartbeat_reader.is_dead(mtime):
-        return None
 
     pid = heartbeat.get("pid") if isinstance(heartbeat, dict) else None
     if not _is_pid_running(pid):
         return None
+
+    if client.heartbeat_reader.is_dead(mtime):
+        return {"pid": int(pid), "state": "stale"}
 
     # A stale exit marker from a previous clean shutdown should not hide a
     # fresh heartbeat from the currently running app.
@@ -185,422 +193,45 @@ def _show_restart_failed(pid: int) -> None:
     )
 
 
-def _find_chrome() -> Path | None:
-    for path in _CHROME_PATHS:
-        if path.exists():
-            return path
-    return None
+def _is_supervisor_running(data_root: Path) -> bool:
+    """Return True if purity_supervisor has a fresh heartbeat (not dead, no exit marker)."""
+    heartbeats_dir = data_root / "_system" / "purity" / "heartbeats"
+    reader = HeartbeatReader(
+        heartbeats_dir=heartbeats_dir,
+        stale_s=_SUPERVISOR_STALE_S,
+        dead_s=_SUPERVISOR_DEAD_S,
+    )
+    _, mtime, exit_present = reader.read("purity_supervisor")
+    return mtime is not None and not exit_present and not reader.is_dead(mtime)
 
 
-class MainWindow(QMainWindow):
-    def __init__(self, runtime=None):
-        super().__init__()
-        self._runtime = runtime
-        self._tray_app = None
-        self.setWindowTitle("Purity — Prototype")
-        self.resize(1280, 800)
-        self._popup_mgr = PopupManager()
-        self._review_win: ReviewWindow | None = None
-        self._notes_browser: NotesBrowserWindow | None = None
-        self._log_viewer_win: PurityLogViewerWindow | None = None
-
-        # Log normalizer sink — register before _build_ui so the sink is ready.
-        self._log_sink = PurityLogNormalizerSink()
-        if runtime is not None:
-            runtime.journal._sinks.append(self._log_sink)
-
-        self._center_on_screen()
-        self._build_menu_bar()
-        self._build_ui()
-
-        self._web_watcher = WebWatcherService(parent=self)
-        self._web_watcher.web_opened.connect(self._on_web_opened)  # type: ignore[arg-type]
-        self._kill_browsers_on_startup()
-        self._web_watcher.start()
-
-        # 60-second heartbeat tick: note_clock + system.alive journal event
-        if self._runtime is not None:
-            self._alive_timer = QTimer(self)
-            self._alive_timer.timeout.connect(self._tick_alive)
-            self._alive_timer.start(60_000)
-
-            self._web_request_timer = QTimer(self)
-            self._web_request_timer.timeout.connect(self._process_web_launch_requests)
-            self._web_request_timer.start(500)
-
-    def _build_ui(self):
-        root = QWidget()
-        vbox = QVBoxLayout(root)
-        vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.setSpacing(0)
-
-        vbox.addWidget(self._build_header())
-
-        body = QWidget()
-        hbox = QHBoxLayout(body)
-        hbox.setContentsMargins(0, 0, 0, 0)
-        hbox.setSpacing(0)
-        hbox.addWidget(ReflectionDashboard(), stretch=1)
-        hbox.addWidget(self._build_sidebar(), stretch=0)
-        vbox.addWidget(body, stretch=1)
-
-        self.setCentralWidget(root)
-
-    def _build_menu_bar(self) -> None:
-        menu_bar = self.menuBar()
-        tools_menu = menu_bar.addMenu("Tools")
-
-        view_journals_action = QAction("View Journals", self)
-        view_journals_action.triggered.connect(self._open_log_viewer)
-        tools_menu.addAction(view_journals_action)
-
-    def _build_header(self) -> QWidget:
-        state = MockAppState()
-        header = QWidget()
-        header.setFixedHeight(52)
-        header.setStyleSheet(
-            f"background-color: {COLOR_SURFACE};"
-            f"border-bottom: 1px solid {COLOR_BORDER};"
-        )
-        row = QHBoxLayout(header)
-        row.setContentsMargins(16, 0, 16, 0)
-        row.setSpacing(16)
-
-        # App name
-        app_name = QLabel("Purity")
-        app_name.setStyleSheet(
-            f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_LARGE}pt;"
-            f"font-weight: 800; color: {COLOR_ACCENT}; background: transparent;"
-        )
-        row.addWidget(app_name)
-
-        row.addStretch()
-
-        # Verse snippet
-        verse = state.today_verse
-        verse_lbl = QLabel(f"\"{verse['text'][:60]}…\"  — {verse['reference']}")
-        verse_lbl.setStyleSheet(
-            f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_SMALL}pt;"
-            f"font-style: italic; color: {COLOR_TEXT_MUTED}; background: transparent;"
-        )
-        row.addWidget(verse_lbl)
-
-        row.addStretch()
-
-        # Streak badge
-        streak_badge = QLabel(f"🔥 Day {state.purity_streak_days}")
-        streak_badge.setStyleSheet(
-            f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt;"
-            f"font-weight: 700; color: {COLOR_TEXT};"
-            f"background-color: {COLOR_SURFACE_2}; border-radius: 10px;"
-            f"padding: 3px 10px;"
-        )
-        row.addWidget(streak_badge)
-
-        # Clock (updates every 60 s)
-        self._clock_lbl = QLabel()
-        self._clock_lbl.setStyleSheet(
-            f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt;"
-            f"color: {COLOR_TEXT_MUTED}; background: transparent; min-width: 56px;"
-        )
-        self._clock_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._update_clock()
-        row.addWidget(self._clock_lbl)
-
-        timer = QTimer(self)
-        timer.timeout.connect(self._update_clock)
-        timer.start(60_000)
-
-        return header
-
-    def _update_clock(self):
-        self._clock_lbl.setText(datetime.now().strftime("%H:%M"))
-
-    def _build_sidebar(self) -> QGroupBox:
-        sidebar = QGroupBox("Demo Triggers")
-        sidebar.setFixedWidth(160)
-        sidebar.setStyleSheet(
-            f"QGroupBox {{"
-            f"  background-color: {COLOR_SURFACE};"
-            f"  border-left: 1px solid {COLOR_BORDER};"
-            f"  border-radius: 0px;"
-            f"  margin-top: 0px;"
-            f"  padding: 12px 8px 8px 8px;"
-            f"  font-size: {FONT_SIZE_SMALL}pt;"
-            f"}}"
-            f"QGroupBox::title {{"
-            f"  subcontrol-origin: margin;"
-            f"  subcontrol-position: top center;"
-            f"  padding: 0 4px;"
-            f"}}"
-        )
-        vbox = QVBoxLayout(sidebar)
-        vbox.setSpacing(8)
-        vbox.setContentsMargins(8, 16, 8, 8)
-
-        for label, popup_type in _POPUP_BUTTONS:
-            btn = QPushButton(label)
-            btn.clicked.connect(
-                lambda checked, pt=popup_type: self._popup_mgr.trigger(pt)
-            )
-            vbox.addWidget(btn)
-
-        review_btn = QPushButton("Open Review")
-        review_btn.clicked.connect(self._open_review)
-        vbox.addWidget(review_btn)
-
-        vbox.addSpacing(8)
-
-        add_note_btn = QPushButton("📝 Add Note")
-        add_note_btn.clicked.connect(self._open_note_dialog)
-        vbox.addWidget(add_note_btn)
-
-        browse_notes_btn = QPushButton("📂 Browse Notes")
-        browse_notes_btn.clicked.connect(self._open_notes_browser)
-        vbox.addWidget(browse_notes_btn)
-
-        log_btn = QPushButton("📋 Journal Viewer")
-        log_btn.clicked.connect(self._open_log_viewer)
-        vbox.addWidget(log_btn)
-
-        vbox.addStretch()
-        return sidebar
-
-    def _tick_alive(self):
-        """Fired every 60 s: update run-tail clock and emit system.alive."""
-        import time as _time
-        from services.journal_events import emit_system_alive
-        if self._runtime is not None:
-            self._runtime.tail.note_clock(_time.time())
-            emit_system_alive(self._runtime.journal)
-
-    def _kill_browsers_on_startup(self):
-        """Kill any browsers already open when the app launches so the watcher starts fresh."""
-        from shane_common.processes.windows import taskkill_processes
-        from services.web_watcher import _WATCHED_BROWSERS
-        taskkill_processes(list(_WATCHED_BROWSERS))
-
-    def _on_web_opened(self, exe: str):
-        """Intercept browser opens: minimize it, then restore or kill based on user choice."""
-        from shane_common.processes.windows import (
-            list_process_pids,
-            enum_visible_windows_for_pids,
-            minimize_windows,
-            restore_windows,
-            taskkill_processes,
-        )
-        from services.journal_events import emit_chrome_opened, emit_chrome_decision
-        from services.web_watcher import _WATCHED_BROWSERS
-
-        permitted = exe in _PERMITTED_BROWSERS
-        minimized_hwnds: list = []
-
-        def _get_browser_pids():
-            return [pid for exe in _WATCHED_BROWSERS for pid in list_process_pids(exe)]
-
-        def _minimize_browser_windows():
-            pids = _get_browser_pids()
-            if pids:
-                new_hwnds = [h for h in enum_visible_windows_for_pids(pids)
-                             if h not in minimized_hwnds]
-                minimized_hwnds.extend(minimize_windows(new_hwnds))
-
-        _minimize_browser_windows()
-
-        if self._runtime is not None:
-            emit_chrome_opened(self._runtime.journal, pid_count=len(_get_browser_pids()))
-
-        popup = WebPopup(permitted=permitted, parent=self)
-        # Browser windows may not exist yet at detection time; retry as they appear.
-        QTimer.singleShot(300, _minimize_browser_windows)
-        QTimer.singleShot(800, _minimize_browser_windows)
-        QTimer.singleShot(1500, _minimize_browser_windows)
-        result = popup.exec()
-        selected_choice = popup.selected_choice
-        reason_text = popup.reason_text
-
-        if result == QDialog.DialogCode.Accepted:
-            restore_windows(minimized_hwnds)
-            if self._runtime is not None:
-                emit_chrome_decision(
-                    self._runtime.journal,
-                    allowed=True,
-                    choice=selected_choice,
-                    reason=reason_text,
-                )
-        else:
-            taskkill_processes(list(_WATCHED_BROWSERS))
-            if self._runtime is not None:
-                emit_chrome_decision(
-                    self._runtime.journal,
-                    allowed=False,
-                    choice=selected_choice,
-                    reason=reason_text,
-                )
-
-    def _process_web_launch_requests(self) -> None:
-        if self._runtime is None:
-            return
-
-        try:
-            pending = read_pending_web_launch_requests(self._runtime.data_root)
-        except Exception as exc:
-            append_web_request_log(
-                self._runtime.data_root,
-                "app.poll_failed",
-                "Running app failed while reading web launch requests.",
-                level="ERROR",
-                exc=exc,
-            )
-            return
-
-        for path, request in pending:
-            try:
-                mark_web_launch_request_done(path)
-                args = request.get("args") if isinstance(request, dict) else []
-                if not isinstance(args, list):
-                    append_web_request_log(
-                        self._runtime.data_root,
-                        "app.request_args_invalid",
-                        "Web launch request args were not a list.",
-                        level="ERROR",
-                        details={"path": str(path), "args_type": type(args).__name__},
-                    )
-                    args = []
-                self._handle_web_launch_request([str(arg) for arg in args])
-            except Exception as exc:
-                append_web_request_log(
-                    self._runtime.data_root,
-                    "app.request_failed",
-                    "Running app failed while processing web launch request.",
-                    level="ERROR",
-                    details={"path": str(path), "request": request},
-                    exc=exc,
-                )
-
-    def _handle_web_launch_request(self, args: list[str]) -> None:
-        from services.journal_events import emit_chrome_decision
-
-        if self._runtime is not None:
-            append_web_request_log(
-                self._runtime.data_root,
-                "app.request_handling_started",
-                "Running app is handling queued web launch request.",
-                details={"args": list(args), "run_id": self._runtime.session.run_id},
-            )
-
-        popup = WebPopup(permitted=True, parent=self)
-        result = popup.exec()
-        selected_choice = popup.selected_choice
-        reason_text = popup.reason_text
-
-        if result == QDialog.DialogCode.Accepted:
-            if self._runtime is not None:
-                emit_chrome_decision(
-                    self._runtime.journal,
-                    allowed=True,
-                    choice=selected_choice,
-                    reason=reason_text,
-                )
-            write_launcher_approved_marker()
-            chrome = _find_chrome()
-            if chrome:
-                proc = subprocess.Popen([str(chrome)] + list(args))
-            else:
-                proc = subprocess.Popen(["chrome"] + list(args), shell=True)
-            if self._runtime is not None:
-                append_web_request_log(
-                    self._runtime.data_root,
-                    "app.chrome_started",
-                    "Chrome was started for approved web launch request.",
-                    details={
-                        "pid": proc.pid,
-                        "args": list(args),
-                        "choice": selected_choice,
-                        "reason": reason_text,
-                    },
-                )
-            return
-
-        if self._runtime is not None:
-            emit_chrome_decision(
-                self._runtime.journal,
-                allowed=False,
-                choice=selected_choice,
-                reason=reason_text,
-            )
-            append_web_request_log(
-                self._runtime.data_root,
-                "app.request_blocked",
-                "Queued web launch request was blocked or cancelled.",
-                details={"choice": selected_choice, "reason": reason_text},
-            )
-
-    def _open_review(self):
-        if self._review_win is not None and self._review_win.isVisible():
-            self._review_win.raise_()
-            self._review_win.activateWindow()
-            return
-        self._review_win = ReviewWindow(parent=self)
-        self._review_win.show()
-
-    def _open_note_dialog(self):
-        NoteDialog(writer=notes_writer, owner="purity", parent=self).exec()
-
-    def _open_notes_browser(self):
-        if self._notes_browser is None:
-            self._notes_browser = NotesBrowserWindow(repository=notes_repo, parent=self)
-            self._notes_browser.set_writer(notes_writer)
-        self._notes_browser.show()
-        self._notes_browser.raise_()
-        self._notes_browser.activateWindow()
-        self._notes_browser.refresh()
-
-    def _open_log_viewer(self):
-        if self._log_viewer_win is None:
-            data_root = self._runtime.data_root if self._runtime is not None else None
-            self._log_viewer_win = PurityLogViewerWindow(
-                sink=self._log_sink, data_root=data_root, parent=None
-            )
-            self._log_sink.emitter.log_row_appended.connect(
-                self._log_viewer_win.append_row
-            )
-        self._log_viewer_win.show()
-        self._log_viewer_win.raise_()
-        self._log_viewer_win.activateWindow()
-
-    def _center_on_screen(self):
-        screen = QApplication.primaryScreen().availableGeometry()
-        frame = self.frameGeometry()
-        frame.moveCenter(screen.center())
-        self.move(frame.topLeft())
-
-    def attach_tray_app(self, tray_app) -> None:
-        self._tray_app = tray_app
-
-    def closeEvent(self, event) -> None:  # type: ignore[override]
-        app = QApplication.instance()
-        if app is None or app.closingDown():
-            super().closeEvent(event)
-            return
-
-        event.ignore()
-        self.hide()
-        if self._tray_app is not None:
-            self._tray_app.notify_running(
-                "Purity is still running in the system tray. Use the tray icon to reopen it.",
-                title="Purity Hidden to Tray",
-            )
+# MainWindow lives in ui.main_window â€” imported above.
+_MAIN_WINDOW_SENTINEL = None  # keep this line so diff tools show the seam
 
 
 def main():
-    from pathlib import Path
     from services.runtime import create_purity_runtime
     from services.journal_events import emit_app_started, emit_app_stopped
-    from gui.supervisor_tray import PurityTrayApp
+    from services.web_requests import start_purity_app
+    from ui.system.supervisor_tray import PurityTrayApp
+
+    settings_manager = build_purity_settings_manager()
 
     # Resolve data_root before QApplication so all paths are stable at startup.
-    data_root = Path(os.environ.get("PURITY_DATA_ROOT", Path.home() / ".purity"))
+    data_root = resolve_purity_data_root(settings_manager)
+
+    _append_startup_log(data_root, f"Startup - executable={sys.executable!r}  argv={sys.argv!r}")
+
+    # --- Singleton gate: named Windows mutex (checked before QApplication) ----
+    if not _try_acquire_singleton_mutex():
+        _append_startup_log(
+            data_root,
+            "Mutex gate: another instance already running - submitting show request and exiting.",
+        )
+        submit_show_app_request(data_root, source="app_launch")
+        return 0
+
+    _append_startup_log(data_root, "Mutex gate: acquired - proceeding with startup.")
 
     app = QApplication(sys.argv)
     app.setStyleSheet(GLOBAL_QSS)
@@ -608,17 +239,36 @@ def main():
 
     existing_instance = _find_running_instance(data_root)
     if existing_instance is not None:
-        if not _prompt_for_running_instance(existing_instance):
-            return 0
-        if not _restart_running_instance(existing_instance):
-            _show_restart_failed(existing_instance["pid"])
-            return 1
+        submit_show_app_request(data_root, source="app_launch")
+        return 0
 
     runtime = create_purity_runtime(data_root)
+    browser_session_manager = BrowserSessionManager(data_root)
+    browser_session_manager.clear_session()
+    extension_heartbeat_monitor = ExtensionHeartbeatMonitor(data_root, stale_after_seconds=35.0)
+    extension_heartbeat_monitor.clear()
+    browser_session_api_server = BrowserSessionApiServer(
+        browser_session_manager,
+        extension_heartbeat_monitor,
+    )
+    browser_session_api_server.start()
+    restart_requested = {"value": False}
 
     runtime.heartbeat.start()
 
-    window = MainWindow(runtime=runtime)
+    # --- Launch supervisor watchdog (separate process) -----------------------
+    if not _is_supervisor_running(data_root):
+        _launch_supervisor(data_root)
+        _append_startup_log(data_root, "Supervisor watchdog launched.")
+    else:
+        _append_startup_log(data_root, "Supervisor watchdog already running â€” skipped launch.")
+
+    window = MainWindow(
+        runtime=runtime,
+        settings_manager=settings_manager,
+        browser_session_manager=browser_session_manager,
+        extension_heartbeat_monitor=extension_heartbeat_monitor,
+    )
     window.show()
 
     emit_app_started(
@@ -629,24 +279,47 @@ def main():
     )
 
     def _on_quit():
+        global _singleton_mutex_handle
+        browser_session_api_server.stop()
+        browser_session_manager.clear_session()
+        extension_heartbeat_monitor.clear()
         emit_app_stopped(runtime.journal, reason="qt.shutdown")
         runtime.journal.close_sinks()
         runtime.tail.flush(reason="system.stop")
         runtime.heartbeat.stop()
+        if _singleton_mutex_handle is not None:
+            try:
+                import ctypes
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+                kernel32.CloseHandle(_singleton_mutex_handle)
+            except Exception:
+                pass
+            _singleton_mutex_handle = None
+
+    def _request_reload() -> None:
+        restart_requested["value"] = True
+        app.quit()
+
+    def _maybe_restart() -> None:
+        if restart_requested["value"]:
+            start_purity_app(data_root)
 
     app.aboutToQuit.connect(_on_quit)
+    app.aboutToQuit.connect(_maybe_restart)
 
-    # App-wide right-click → notes context menu
+    # App-wide right-click â†’ notes context menu
     notes_filter = NotesContextMenuFilter(app)
     app.installEventFilter(notes_filter)
 
     # Supervisor tray
-    purity_tray = PurityTrayApp(data_root, main_window=window)
+    purity_tray = PurityTrayApp(
+        data_root,
+        main_window=window,
+        reload_fn=_request_reload,
+    )
     purity_tray.start()
     window.attach_tray_app(purity_tray)
-    purity_tray.notify_running(
-        "Purity is running. If you close the main window it will stay active in the system tray.",
-    )
 
     return app.exec()
 

@@ -1,7 +1,7 @@
 import tkinter as tk
 import os
 import subprocess
-import reminder_dialog as rd
+from ui.intervention import reminder_dialog as rd
 
 
 def show_chrome_dialog():

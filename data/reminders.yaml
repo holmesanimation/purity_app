@@ -1,0 +1,50 @@
+# Panic Button Reminders
+#
+# These appear at the top of the panic dialog as an identity reminder.
+# A random entry is chosen each time the dialog opens.
+#
+# Fields:
+#   title      - Your identity or calling statement (displayed bold)
+#   note       - A supporting personal affirmation (regular weight)
+#   verse_ref  - Scripture reference (displayed bold)
+#   verse_text - The full scripture quote (displayed italic)
+#
+# To customise: copy this file to ~/.purity/reminders.yaml and edit freely.
+# Your copy takes priority over this bundled default.
+
+reminders:
+
+  - title: "I Protect Women"
+    note: "I am called to bring joy to all women. I love women."
+    verse_ref: "1 Tim. 1:5"
+    verse_text: "The aim of our charge is love that issues from a pure heart and a good conscience and a sincere faith."
+
+  - title: "I Am Made for More"
+    note: "I was created to build, to serve, and to love well. Lust steals that."
+    verse_ref: "Eph. 2:10"
+    verse_text: "For we are God's handiwork, created in Christ Jesus to do good works, which God prepared in advance for us to do."
+
+  - title: "I Am a Son of God"
+    note: "My identity is settled. I do not need to search for it here."
+    verse_ref: "1 John 3:1"
+    verse_text: "See what great love the Father has lavished on us, that we should be called children of God! And that is what we are!"
+
+  - title: "I Walk in Freedom"
+    note: "Christ purchased my freedom. I can walk away from this right now."
+    verse_ref: "Gal. 5:1"
+    verse_text: "It is for freedom that Christ has set us free. Stand firm, then, and do not let yourselves be burdened again by a yoke of slavery."
+
+  - title: "I Choose the Better Thing"
+    note: "The momentary pull will pass. What I build today will last."
+    verse_ref: "Rom. 8:6"
+    verse_text: "The mind governed by the flesh is death, but the mind governed by the Spirit is life and peace."
+
+  - title: "I Am Not Alone in This Fight"
+    note: "Brothers are praying for me right now. I am held."
+    verse_ref: "Heb. 12:1"
+    verse_text: "Since we are surrounded by such a great cloud of witnesses, let us throw off everything that hinders and run with perseverance."
+
+  - title: "My Body Is a Temple"
+    note: "I honour God with what I look at and what I choose."
+    verse_ref: "1 Cor. 6:19–20"
+    verse_text: "You are not your own; you were bought at a price. Therefore honour God with your bodies."

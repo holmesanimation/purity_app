@@ -3,9 +3,9 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from purity_app.gui.log_viewer_window import PurityLogViewerWindow, _load_disk_rows
-from purity_app.gui.log_normalizer_sink import PurityLogNormalizerSink
-from purity_app.services.log_kind_map import TYPE_SYSTEM, TYPE_WEB
+from purity_app.ui.system.log_viewer_window import PurityLogViewerWindow, _load_disk_rows
+from purity_app.ui.system.log_normalizer_sink import PurityLogNormalizerSink
+from purity_app.services.log_kind_map import TYPE_SYSTEM, TYPE_WEB, TYPE_INTERVENTION
 from shane_common.ui.log_viewer.log_row import LogRow
 
 
@@ -67,3 +67,45 @@ def test_journal_viewer_loads_disk_journal_rows(tmp_path: Path) -> None:
     window._type_combo.setCurrentIndex(index)
     app.processEvents()
     assert window._proxy.rowCount() == 1
+
+
+def test_panic_reflection_saved_loads_as_intervention_row(tmp_path: Path) -> None:
+    """panic.reflection_saved events in panic.jsonl load and display as Intervention rows."""
+    app = _app()
+    journal_dir = tmp_path / "_system" / "purity" / "journals" / "2026-05-27"
+    journal_dir.mkdir(parents=True)
+    event = {
+        "local_TS": "2026-05-27T09:15:00-06:00",
+        "ts": "2026-05-27T15:15:00+00:00",
+        "run_id": "test-run",
+        "kind": "panic.reflection_saved",
+        "source": {"app": "purity_app", "component": "panic"},
+        "payload": {
+            "panic_session_id": "abc-123",
+            "reason_id": "lonely",
+        },
+    }
+    (journal_dir / "panic.jsonl").write_text(
+        json.dumps(event, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    rows = _load_disk_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0].kind == "panic.reflection_saved"
+
+    window = PurityLogViewerWindow(sink=PurityLogNormalizerSink(), data_root=tmp_path)
+    app.processEvents()
+    assert window._proxy.rowCount() == 1
+
+    # Filter to Intervention — the panic row must remain visible.
+    index = window._type_combo.findData(TYPE_INTERVENTION)
+    window._type_combo.setCurrentIndex(index)
+    app.processEvents()
+    assert window._proxy.rowCount() == 1
+
+    # Filtering to a different type hides the panic row.
+    index = window._type_combo.findData(TYPE_WEB)
+    window._type_combo.setCurrentIndex(index)
+    app.processEvents()
+    assert window._proxy.rowCount() == 0

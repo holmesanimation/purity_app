@@ -33,8 +33,10 @@ from shane_common.watchdog.tray.icons import (
 )
 
 try:
+    from purity_app.services.browser_session import ExtensionHeartbeatMonitor
     from purity_app.services.supervisor_client import PuritySupervisorClient
 except ModuleNotFoundError:
+    from services.browser_session import ExtensionHeartbeatMonitor  # type: ignore[no-redef]
     from services.supervisor_client import PuritySupervisorClient  # type: ignore[no-redef]
 
 
@@ -46,14 +48,16 @@ class PurityStatusWindow(BaseStatusWindow):
     """
 
     def __init__(self, client: PuritySupervisorClient, parent=None) -> None:
+        self._client = client
+        self._status_label: Optional[QtWidgets.QLabel] = None
+        self._extension_status_label: Optional[QtWidgets.QLabel] = None
+        self._extension_heartbeat_monitor = ExtensionHeartbeatMonitor(client.heartbeats_dir.parents[2])
         super().__init__(
             settings_org="purity",
             settings_app="PurityMonitor",
             title="Purity — Status",
             parent=parent,
         )
-        self._client = client
-        self._status_label: Optional[QtWidgets.QLabel] = None
 
     def _build_content(self, container: QtWidgets.QWidget) -> None:
         layout = container.layout()
@@ -63,7 +67,16 @@ class PurityStatusWindow(BaseStatusWindow):
         self._status_label = QtWidgets.QLabel("—")
         self._status_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self._status_label)
+
+        self._extension_status_label = QtWidgets.QLabel("—")
+        self._extension_status_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._extension_status_label)
         layout.addStretch()
+
+    def _set_extension_status_style(self, color: str) -> None:
+        if self._extension_status_label is None:
+            return
+        self._extension_status_label.setStyleSheet(f"font-weight: 600; color: {color};")
 
     def refresh(self) -> None:
         """Update the display from disk state."""
@@ -89,6 +102,28 @@ class PurityStatusWindow(BaseStatusWindow):
             text = f"purity_app: HEALTHY ({age:.1f}s)"
         self._status_label.setText(text)
 
+        if self._extension_status_label is None:
+            return
+
+        extension_status = self._extension_heartbeat_monitor.get_status()
+        if extension_status.get("healthy"):
+            age_seconds = float(extension_status.get("age_seconds") or 0.0)
+            version = str(extension_status.get("extension_version") or "unknown")
+            extension_text = (
+                f"extension heartbeat: HEALTHY ({age_seconds:.1f}s since last ping, v{version})"
+            )
+            extension_color = COLOR_GREEN
+        elif extension_status.get("last_seen_ts") is not None:
+            age_seconds = extension_status.get("age_seconds")
+            age_text = "unknown age" if age_seconds is None else f"{float(age_seconds):.1f}s since last ping"
+            extension_text = f"extension heartbeat: STALE ({age_text})"
+            extension_color = COLOR_YELLOW
+        else:
+            extension_text = "extension heartbeat: no heartbeat received"
+            extension_color = COLOR_GRAY
+        self._extension_status_label.setText(extension_text)
+        self._set_extension_status_style(extension_color)
+
 
 class PurityTrayApp(BaseTrayApp):
     """
@@ -100,9 +135,16 @@ class PurityTrayApp(BaseTrayApp):
         Root data directory.  Passed through to PuritySupervisorClient.
     """
 
-    def __init__(self, data_root: Path, main_window: QtWidgets.QWidget | None = None, parent=None) -> None:
+    def __init__(
+        self,
+        data_root: Path,
+        main_window: QtWidgets.QWidget | None = None,
+        reload_fn=None,
+        parent=None,
+    ) -> None:
         self._client = PuritySupervisorClient(data_root)
         self._main_window = main_window
+        self._reload_fn = reload_fn
         liveness_path = (
             data_root / "_system" / "purity" / "locks" / "purity_tray.liveness.json"
         )
@@ -122,6 +164,9 @@ class PurityTrayApp(BaseTrayApp):
         show_main_action.triggered.connect(self._show_main_window)
         show_status_action = self._menu.addAction("Show Status")
         show_status_action.triggered.connect(self._toggle_status_window)
+        if self._reload_fn is not None:
+            reload_action = self._menu.addAction("Reload")
+            reload_action.triggered.connect(self._request_reload)
         self._menu.addSeparator()
 
     # ------------------------------------------------------------------
@@ -198,3 +243,8 @@ class PurityTrayApp(BaseTrayApp):
             QSystemTrayIcon.MessageIcon.Information,
             5000,
         )
+
+    def _request_reload(self) -> None:
+        if self._reload_fn is None:
+            return
+        self._reload_fn()

@@ -4,7 +4,7 @@ Phase 0 characterization tests: JSONL log path naming and append behavior.
 import json
 import datetime
 import pytest
-import reminder_dialog as rd
+from ui.intervention import reminder_dialog as rd
 
 
 class TestGetLogPath:

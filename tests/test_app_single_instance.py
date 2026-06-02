@@ -57,12 +57,30 @@ class TestSingleInstanceDetection:
 
         assert app_module._find_running_instance(tmp_path) is None
 
-    def test_returns_none_when_heartbeat_is_dead(self, monkeypatch, tmp_path: Path) -> None:
+    def test_returns_none_when_heartbeat_is_dead_and_pid_gone(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        # Dead heartbeat + dead PID → not running.
+        reader = _FakeHeartbeatReader({"pid": 123}, 10.0, False, dead=True)
+        _install_fake_client(monkeypatch, reader)
+        monkeypatch.setattr(app_module, "_is_pid_running", lambda pid: False)
+
+        assert app_module._find_running_instance(tmp_path) is None
+
+    def test_detects_running_instance_when_heartbeat_is_dead_but_pid_alive(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        # Dead heartbeat mtime + live PID → still treat as running (startup race window:
+        # new app deleted exit marker and wrote initial heartbeat but the background thread
+        # hasn't refreshed the file yet when a duplicate launch checks).
         reader = _FakeHeartbeatReader({"pid": 123}, 10.0, False, dead=True)
         _install_fake_client(monkeypatch, reader)
         monkeypatch.setattr(app_module, "_is_pid_running", lambda pid: True)
 
-        assert app_module._find_running_instance(tmp_path) is None
+        result = app_module._find_running_instance(tmp_path)
+        assert result is not None
+        assert result["pid"] == 123
+        assert result["state"] == "stale"
 
     def test_returns_none_when_pid_is_not_running(self, monkeypatch, tmp_path: Path) -> None:
         reader = _FakeHeartbeatReader({"pid": 123}, 10.0, False)

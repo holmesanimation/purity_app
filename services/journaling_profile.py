@@ -22,6 +22,19 @@ KIND_POPUP_TRIGGERED = "popup.triggered"
 KIND_NOTE_CREATED    = "note.created"
 KIND_REVIEW_OPENED   = "review.opened"
 
+# Panic intervention kinds
+KIND_PANIC_STARTED            = "panic.started"
+KIND_PANIC_STATE_CHANGED      = "panic.state_changed"
+KIND_PANIC_REASONS_SELECTED   = "panic.reasons_selected"
+KIND_PANIC_REFLECTION_SAVED   = "panic.reflection_saved"
+KIND_PANIC_TOPIC_ACKNOWLEDGED = "panic.topic_acknowledged"
+KIND_PANIC_COUNTDOWN_STARTED  = "panic.countdown_started"
+KIND_PANIC_COUNTDOWN_COMPLETED = "panic.countdown_completed"
+KIND_PANIC_CLOSED             = "panic.closed"
+KIND_PANIC_NOTIFY_GROUP_CLICKED = "panic.notify_group_clicked"
+KIND_PANIC_DANGER_ELEVATED    = "panic.danger_elevated"
+KIND_PANIC_DANGER_CLEARED     = "panic.danger_cleared"
+
 _PURITY_KINDS: frozenset = frozenset({
     KIND_SYSTEM_START,
     KIND_SYSTEM_STOP,
@@ -32,6 +45,17 @@ _PURITY_KINDS: frozenset = frozenset({
     KIND_POPUP_TRIGGERED,
     KIND_NOTE_CREATED,
     KIND_REVIEW_OPENED,
+    KIND_PANIC_STARTED,
+    KIND_PANIC_STATE_CHANGED,
+    KIND_PANIC_REASONS_SELECTED,
+    KIND_PANIC_REFLECTION_SAVED,
+    KIND_PANIC_TOPIC_ACKNOWLEDGED,
+    KIND_PANIC_COUNTDOWN_STARTED,
+    KIND_PANIC_COUNTDOWN_COMPLETED,
+    KIND_PANIC_CLOSED,
+    KIND_PANIC_NOTIFY_GROUP_CLICKED,
+    KIND_PANIC_DANGER_ELEVATED,
+    KIND_PANIC_DANGER_CLEARED,
 })
 
 
@@ -67,6 +91,8 @@ class PurityJournalProfile(JournalProfile):
         return None
 
     def stream_for_kind(self, kind: str) -> str:
+        if kind.startswith("panic."):
+            return "panic"
         return kind.split(".")[0] if "." in kind else "misc"
 
     def route_event(self, envelope: dict) -> Path:

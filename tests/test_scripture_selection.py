@@ -2,7 +2,7 @@
 Phase 0 characterization tests: scripture selection behavior.
 """
 import pytest
-import reminder_dialog as rd
+from ui.intervention import reminder_dialog as rd
 
 
 # Use a fixed, known BELIEF_SCRIPTURE_MAP to make tests deterministic.

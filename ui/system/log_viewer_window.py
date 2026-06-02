@@ -8,26 +8,34 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QTableView, QTextEdit, QHeaderView, QLabel, QComboBox,
+    QPushButton, QSplitter, QTableView, QTextEdit, QHeaderView, QLabel, QComboBox,
 )
 
 from shane_common.ui.log_viewer.log_table_model import (
     LogTableModel, LogFilterProxyModel,
-    COL_TIMESTAMP, COL_MESSAGE, LOG_ROW_ROLE,
+    COL_TIMESTAMP, COL_MESSAGE, COL_NOTES, LOG_ROW_ROLE,
 )
 from shane_common.ui.log_viewer.base_normalizer_sink import BaseLogNormalizerSink
 from shane_common.ui.log_viewer.log_row import LogRow
 from shane_common.ui.log_viewer.log_row_emitter import CallbackLogRowEmitter
 
 try:
-    from purity_app.gui.log_normalizer_sink import PurityLogNormalizerSink
+    from purity_app.ui.system.log_normalizer_sink import PurityLogNormalizerSink
     from purity_app.services.log_kind_map import PURITY_TYPE_OPTIONS, spec_for_purity_kind
 except ModuleNotFoundError:
-    from gui.log_normalizer_sink import PurityLogNormalizerSink  # type: ignore[no-redef]
+    from ui.system.log_normalizer_sink import PurityLogNormalizerSink  # type: ignore[no-redef]
     from services.log_kind_map import (  # type: ignore[no-redef]
         PURITY_TYPE_OPTIONS,
         spec_for_purity_kind,
     )
+
+
+# Timezone selector options: (display_name, IANA_key)
+_TZ_COMBO_OPTIONS: list[tuple[str, str]] = [
+    ("UTC",      "UTC"),
+    ("New York", "America/New_York"),
+    ("Local",    "local"),
+]
 
 
 def _row_key(row: LogRow) -> tuple:
@@ -143,6 +151,8 @@ class PurityLogViewerWindow(QMainWindow):
 
         vbox.addLayout(self._build_filter_bar())
 
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
         self._table = QTableView()
         self._table.setModel(self._proxy)
         self._table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
@@ -150,8 +160,11 @@ class PurityLogViewerWindow(QMainWindow):
         self._table.setSortingEnabled(True)
         self._table.verticalHeader().setVisible(False)
         hdr = self._table.horizontalHeader()
-        hdr.setStretchLastSection(True)
+        hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(COL_MESSAGE, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(COL_NOTES, QHeaderView.ResizeMode.Fixed)
+        hdr.resizeSection(COL_NOTES, 24)
 
         # Fixed column widths.
         self._table.setColumnWidth(COL_TIMESTAMP, 90)
@@ -161,19 +174,26 @@ class PurityLogViewerWindow(QMainWindow):
         self._table.setColumnWidth(4, 140)  # Kind
 
         self._table.selectionModel().currentRowChanged.connect(self._on_row_changed)
-        vbox.addWidget(self._table, stretch=3)
+        splitter.addWidget(self._table)
 
         self._detail = QTextEdit()
         self._detail.setReadOnly(True)
-        self._detail.setMaximumHeight(140)
+        self._detail.setMinimumWidth(260)
         self._detail.setPlaceholderText("Select a row to see details.")
-        vbox.addWidget(self._detail, stretch=0)
+        splitter.addWidget(self._detail)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        vbox.addWidget(splitter, stretch=1)
 
         self.setCentralWidget(root)
 
     def _build_filter_bar(self) -> QHBoxLayout:
         hbox = QHBoxLayout()
         hbox.setSpacing(6)
+
+        self._tz_combo = self._build_tz_combo(hbox)
+        hbox.addSpacing(8)
 
         lbl = QLabel("Level:")
         hbox.addWidget(lbl)
@@ -201,9 +221,27 @@ class PurityLogViewerWindow(QMainWindow):
         hbox.addStretch()
         return hbox
 
+    def _build_tz_combo(self, parent_layout: QHBoxLayout) -> QComboBox:
+        lbl = QLabel("Time:")
+        lbl.setStyleSheet("font-size: 11px; padding: 0 2px;")
+        parent_layout.addWidget(lbl)
+        combo = QComboBox()
+        combo.setObjectName("tz_combo")
+        for display_name, _ in _TZ_COMBO_OPTIONS:
+            combo.addItem(display_name)
+        combo.setFixedWidth(88)
+        combo.currentIndexChanged.connect(self._on_tz_changed)
+        parent_layout.addWidget(combo)
+        return combo
+
     # ------------------------------------------------------------------ #
     # Slots
     # ------------------------------------------------------------------ #
+
+    def _on_tz_changed(self, index: int) -> None:
+        if 0 <= index < len(_TZ_COMBO_OPTIONS):
+            _, tz_key = _TZ_COMBO_OPTIONS[index]
+            self._model.set_display_tz(tz_key)
 
     def _on_row_changed(self, current, _previous) -> None:
         src_idx = self._proxy.mapToSource(current)

@@ -19,6 +19,17 @@ from services.journaling_profile import (
     KIND_POPUP_TRIGGERED,
     KIND_NOTE_CREATED,
     KIND_REVIEW_OPENED,
+    KIND_PANIC_STARTED,
+    KIND_PANIC_STATE_CHANGED,
+    KIND_PANIC_REASONS_SELECTED,
+    KIND_PANIC_REFLECTION_SAVED,
+    KIND_PANIC_TOPIC_ACKNOWLEDGED,
+    KIND_PANIC_COUNTDOWN_STARTED,
+    KIND_PANIC_COUNTDOWN_COMPLETED,
+    KIND_PANIC_CLOSED,
+    KIND_PANIC_NOTIFY_GROUP_CLICKED,
+    KIND_PANIC_DANGER_ELEVATED,
+    KIND_PANIC_DANGER_CLEARED,
 )
 
 if TYPE_CHECKING:
@@ -92,3 +103,189 @@ def emit_note_created(
 
 def emit_review_opened(j: "JournalService") -> None:
     j.emit(KIND_REVIEW_OPENED, {}, source="review")
+
+
+# ---------------------------------------------------------------------------
+# Panic intervention emitters
+# ---------------------------------------------------------------------------
+
+def _panic_correlation(panic_session_id: str) -> dict:
+    return {"panic_session_id": panic_session_id}
+
+
+def emit_panic_started(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    started_while_elevated: bool,
+) -> None:
+    j.emit(
+        KIND_PANIC_STARTED,
+        {
+            "panic_session_id": panic_session_id,
+            "started_while_elevated": bool(started_while_elevated),
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_state_changed(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    from_state: str,
+    to_state: str,
+) -> None:
+    j.emit(
+        KIND_PANIC_STATE_CHANGED,
+        {
+            "panic_session_id": panic_session_id,
+            "from_state": from_state,
+            "to_state": to_state,
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_reasons_selected(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    reason_ids: list[str],
+) -> None:
+    j.emit(
+        KIND_PANIC_REASONS_SELECTED,
+        {
+            "panic_session_id": panic_session_id,
+            "reason_ids": list(reason_ids),
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_reflection_saved(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    reason_id: str,
+) -> None:
+    j.emit(
+        KIND_PANIC_REFLECTION_SAVED,
+        {
+            "panic_session_id": panic_session_id,
+            "reason_id": reason_id,
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_topic_acknowledged(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    reason_id: str,
+) -> None:
+    j.emit(
+        KIND_PANIC_TOPIC_ACKNOWLEDGED,
+        {
+            "panic_session_id": panic_session_id,
+            "reason_id": reason_id,
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_countdown_started(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    countdown_seconds: int,
+) -> None:
+    j.emit(
+        KIND_PANIC_COUNTDOWN_STARTED,
+        {
+            "panic_session_id": panic_session_id,
+            "countdown_seconds": int(countdown_seconds),
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_countdown_completed(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+) -> None:
+    j.emit(
+        KIND_PANIC_COUNTDOWN_COMPLETED,
+        {"panic_session_id": panic_session_id},
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_closed(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    outcome: str,
+) -> None:
+    j.emit(
+        KIND_PANIC_CLOSED,
+        {
+            "panic_session_id": panic_session_id,
+            "outcome": outcome,
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_notify_group_clicked(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+) -> None:
+    j.emit(
+        KIND_PANIC_NOTIFY_GROUP_CLICKED,
+        {"panic_session_id": panic_session_id},
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_danger_elevated(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+    override_url: str = "",
+) -> None:
+    j.emit(
+        KIND_PANIC_DANGER_ELEVATED,
+        {
+            "panic_session_id": panic_session_id,
+            "override_url": override_url,
+        },
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+
+
+def emit_panic_danger_cleared(
+    j: "JournalService",
+    *,
+    panic_session_id: str,
+) -> None:
+    j.emit(
+        KIND_PANIC_DANGER_CLEARED,
+        {"panic_session_id": panic_session_id},
+        source="panic",
+        correlation=_panic_correlation(panic_session_id),
+    )
+

@@ -35,6 +35,10 @@ def request_inbox_dir(data_root: Path) -> Path:
     return Path(data_root) / "_system" / "purity" / "web_requests" / "inbox"
 
 
+def app_control_inbox_dir(data_root: Path) -> Path:
+    return Path(data_root) / "_system" / "purity" / "app_requests" / "inbox"
+
+
 def web_requests_log_path(data_root: Path) -> Path:
     return Path(data_root) / "_system" / "purity" / "web_requests" / "web_requests.log.jsonl"
 
@@ -98,6 +102,29 @@ def submit_web_launch_request(data_root: Path, args: list[str]) -> Path:
     return path
 
 
+def submit_show_app_request(data_root: Path, *, source: str = "app_launch") -> Path:
+    request_id = uuid.uuid4().hex
+    path = app_control_inbox_dir(data_root) / f"{int(time.time() * 1000)}_{request_id}.json"
+    write_json_atomic(
+        path,
+        {
+            "schema_version": REQUEST_SCHEMA_VERSION,
+            "request_id": request_id,
+            "created_ts": time.time(),
+            "action": "show_main_window",
+            "source": str(source),
+        },
+        sort_keys=False,
+    )
+    append_web_request_log(
+        data_root,
+        "app_request.submitted",
+        "Queued request for running Purity app.",
+        details={"path": str(path), "action": "show_main_window", "source": str(source)},
+    )
+    return path
+
+
 def read_pending_web_launch_requests(data_root: Path) -> list[tuple[Path, dict[str, Any]]]:
     inbox = request_inbox_dir(data_root)
     if not inbox.is_dir():
@@ -130,6 +157,38 @@ def read_pending_web_launch_requests(data_root: Path) -> list[tuple[Path, dict[s
     return pending
 
 
+def read_pending_app_control_requests(data_root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    inbox = app_control_inbox_dir(data_root)
+    if not inbox.is_dir():
+        return []
+
+    pending: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(inbox.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            append_web_request_log(
+                data_root,
+                "app_request.read_failed",
+                "Could not read pending app control request.",
+                level="ERROR",
+                details={"path": str(path)},
+                exc=exc,
+            )
+            continue
+        if isinstance(data, dict):
+            pending.append((path, data))
+        else:
+            append_web_request_log(
+                data_root,
+                "app_request.invalid_payload",
+                "Pending app control request was not a JSON object.",
+                level="ERROR",
+                details={"path": str(path), "payload_type": type(data).__name__},
+            )
+    return pending
+
+
 def mark_web_launch_request_done(path: Path) -> None:
     try:
         path.unlink()
@@ -140,6 +199,22 @@ def mark_web_launch_request_done(path: Path) -> None:
             path.parents[4] if len(path.parents) > 4 else resolve_data_root(),
             "request.delete_failed",
             "Could not delete processed web launch request.",
+            level="ERROR",
+            details={"path": str(path)},
+            exc=exc,
+        )
+
+
+def mark_app_control_request_done(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        append_web_request_log(
+            path.parents[4] if len(path.parents) > 4 else resolve_data_root(),
+            "app_request.delete_failed",
+            "Could not delete processed app control request.",
             level="ERROR",
             details={"path": str(path)},
             exc=exc,

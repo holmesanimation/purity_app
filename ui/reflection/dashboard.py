@@ -21,6 +21,7 @@ from styles.theme import (
 def _make_scroll_column(contents: list[QWidget], min_width: int = 260) -> QScrollArea:
     """Wrap a list of widgets in a vertical scroll area column."""
     container = QWidget()
+    container.setProperty("class", "transparent")
     vbox = QVBoxLayout(container)
     vbox.setContentsMargins(8, 8, 8, 8)
     vbox.setSpacing(12)
@@ -29,6 +30,7 @@ def _make_scroll_column(contents: list[QWidget], min_width: int = 260) -> QScrol
     vbox.addStretch()
 
     scroll = QScrollArea()
+    scroll.setProperty("class", "transparent")
     scroll.setWidgetResizable(True)
     scroll.setWidget(container)
     scroll.setMinimumWidth(min_width)
@@ -65,6 +67,7 @@ def _build_risk_card(state: MockAppState) -> CardWidget:
 class ReflectionDashboard(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setProperty("class", "transparent")
 
         state = MockAppState()
         journal_svc = FakeJournalService()

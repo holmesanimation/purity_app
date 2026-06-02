@@ -12,7 +12,7 @@ import pytest
 # Import reminder_dialog without triggering the module-level config file read
 # or breaking if optional deps are missing.
 # ---------------------------------------------------------------------------
-import reminder_dialog as rd
+from ui.intervention import reminder_dialog as rd
 
 
 # ---------------------------------------------------------------------------

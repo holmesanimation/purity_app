@@ -15,6 +15,16 @@ from purity_app.services.journal_events import (
     emit_note_created,
     emit_app_started,
     emit_system_alive,
+    emit_panic_started,
+    emit_panic_closed,
+    emit_panic_reasons_selected,
+    emit_panic_reflection_saved,
+    emit_panic_topic_acknowledged,
+    emit_panic_countdown_started,
+    emit_panic_countdown_completed,
+    emit_panic_danger_elevated,
+    emit_panic_danger_cleared,
+    emit_panic_notify_group_clicked,
 )
 from purity_app.services.runtime import PurityRuntime, create_purity_runtime
 
@@ -104,3 +114,122 @@ class TestPurityJournalEvents:
         assert run_ids == {runtime.session.run_id}, (
             f"Expected single run_id {runtime.session.run_id!r}, got {run_ids}"
         )
+
+
+class TestPanicJournalEvents:
+    _FAKE_SESSION_ID = "aaaabbbb-cccc-dddd-eeee-ffff00001111"
+
+    def test_panic_started_payload(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_started(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            started_while_elevated=True,
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.started")
+        assert events, "No panic.started event found"
+        payload = events[0]["payload"]
+        assert payload["panic_session_id"] == self._FAKE_SESSION_ID
+        assert payload["started_while_elevated"] is True
+
+    def test_panic_started_while_elevated_false(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_started(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            started_while_elevated=False,
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.started")
+        assert events[0]["payload"]["started_while_elevated"] is False
+
+    def test_panic_closed_payload_has_outcome(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_closed(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            outcome="recovered",
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.closed")
+        assert events, "No panic.closed event found"
+        payload = events[0]["payload"]
+        assert payload["panic_session_id"] == self._FAKE_SESSION_ID
+        assert payload["outcome"] == "recovered"
+
+    def test_panic_events_route_to_panic_jsonl(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_started(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            started_while_elevated=False,
+        )
+        runtime.journal.close_sinks()
+
+        panic_files = list(tmp_path.rglob("panic.jsonl"))
+        assert panic_files, "panic.jsonl not found under data root"
+
+    def test_panic_reasons_selected_payload(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_reasons_selected(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            reason_ids=["lonely", "tired"],
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.reasons_selected")
+        assert events
+        assert events[0]["payload"]["reason_ids"] == ["lonely", "tired"]
+
+    def test_panic_reflection_saved_has_no_text(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        """emit_panic_reflection_saved must NOT include reflection text in the journal event."""
+        emit_panic_reflection_saved(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            reason_id="lonely",
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.reflection_saved")
+        assert events
+        payload = events[0]["payload"]
+        assert "reflection_text" not in payload
+        assert "text" not in payload
+        assert payload["reason_id"] == "lonely"
+
+    def test_panic_correlation_field_present(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_started(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            started_while_elevated=False,
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.started")
+        assert events
+        correlation = events[0].get("correlation") or {}
+        assert correlation.get("panic_session_id") == self._FAKE_SESSION_ID
+
+    def test_panic_countdown_started_payload(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_countdown_started(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            countdown_seconds=300,
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.countdown_started")
+        assert events
+        assert events[0]["payload"]["countdown_seconds"] == 300
+
+    def test_panic_danger_elevated_payload(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_panic_danger_elevated(
+            runtime.journal,
+            panic_session_id=self._FAKE_SESSION_ID,
+            override_url="https://example.com",
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "panic.danger_elevated")
+        assert events
+        assert events[0]["payload"]["override_url"] == "https://example.com"

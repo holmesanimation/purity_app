@@ -3,10 +3,14 @@ import os
 from pathlib import Path
 
 from purity_app.services.web_requests import (
+    app_control_inbox_dir,
     is_purity_app_running,
+    mark_app_control_request_done,
     mark_web_launch_request_done,
+    read_pending_app_control_requests,
     read_pending_web_launch_requests,
     request_inbox_dir,
+    submit_show_app_request,
     submit_web_launch_request,
 )
 
@@ -30,6 +34,19 @@ def test_read_and_mark_pending_web_launch_requests(tmp_path: Path) -> None:
 
     mark_web_launch_request_done(pending[0][0])
     assert read_pending_web_launch_requests(tmp_path) == []
+
+
+def test_submit_show_app_request_writes_app_control_inbox_file(tmp_path: Path) -> None:
+    path = submit_show_app_request(tmp_path, source="app_launch")
+
+    assert path.parent == app_control_inbox_dir(tmp_path)
+    pending = read_pending_app_control_requests(tmp_path)
+    assert len(pending) == 1
+    assert pending[0][1]["action"] == "show_main_window"
+    assert pending[0][1]["source"] == "app_launch"
+
+    mark_app_control_request_done(pending[0][0])
+    assert read_pending_app_control_requests(tmp_path) == []
 
 
 class _FakeHeartbeatReader:

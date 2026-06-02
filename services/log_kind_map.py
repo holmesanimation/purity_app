@@ -103,6 +103,62 @@ PURITY_KIND_MAP: Dict[str, KindSpec] = {
         message_template="Review opened: {title}",
         importance="NORMAL",
     ),
+    "panic.started": KindSpec(
+        severity="WARN",
+        message_template="Panic intervention started",
+        importance="HIGH",
+    ),
+    "panic.state_changed": KindSpec(
+        severity="INFO",
+        message_template="Panic state changed",
+        importance="NORMAL",
+    ),
+    "panic.reasons_selected": KindSpec(
+        severity="INFO",
+        message_template="Panic reasons selected",
+        importance="NORMAL",
+    ),
+    "panic.reflection_saved": KindSpec(
+        severity="INFO",
+        message_template="Panic reflection saved",
+        importance="NORMAL",
+    ),
+    "panic.topic_acknowledged": KindSpec(
+        severity="INFO",
+        message_template="Panic topic acknowledged",
+        importance="NORMAL",
+    ),
+    "panic.countdown_started": KindSpec(
+        severity="INFO",
+        message_template="Panic countdown started",
+        importance="NORMAL",
+    ),
+    "panic.countdown_completed": KindSpec(
+        severity="INFO",
+        message_template="Panic countdown completed",
+        importance="NORMAL",
+    ),
+    "panic.closed": KindSpec(
+        severity="INFO",
+        message_template="Panic session closed",
+        importance="HIGH",
+    ),
+    "panic.notify_group_clicked": KindSpec(
+        severity="INFO",
+        message_template="Group prayer notification clicked",
+        importance="NORMAL",
+    ),
+    "panic.danger_elevated": KindSpec(
+        severity="WARN",
+        message_template="Browser override detected — elevated danger",
+        importance="HIGH",
+        problem=True,
+    ),
+    "panic.danger_cleared": KindSpec(
+        severity="INFO",
+        message_template="Elevated danger state cleared",
+        importance="NORMAL",
+    ),
 }
 
 
@@ -119,6 +175,8 @@ def classify_purity_row_type(row: LogRow) -> int:
     if kind.startswith("chrome."):
         return TYPE_WEB
     if kind.startswith("popup."):
+        return TYPE_INTERVENTION
+    if kind.startswith("panic."):
         return TYPE_INTERVENTION
     if kind.startswith("note."):
         return TYPE_NOTES

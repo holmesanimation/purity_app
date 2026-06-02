@@ -2,7 +2,7 @@
 import tempfile
 from pathlib import Path
 from PySide6.QtCore import QObject, Signal, QTimer
-from shane_common.processes.windows import is_process_running
+from shane_common.processes.windows import has_visible_window
 
 _WATCHED_BROWSERS = ('chrome.exe', 'msedge.exe')
 _POLL_MS = 2000
@@ -31,13 +31,13 @@ class WebWatcherService(QObject):
         self._timer.timeout.connect(self._poll)
 
     def start(self):
-        self._was_running = {exe: is_process_running(exe) for exe in _WATCHED_BROWSERS}
+        self._was_running = {exe: has_visible_window(exe) for exe in _WATCHED_BROWSERS}
         self._timer.start()
 
     def _poll(self):
         fired = False
         for exe in _WATCHED_BROWSERS:
-            is_running = is_process_running(exe)
+            is_running = has_visible_window(exe)
             just_opened = is_running and not self._was_running.get(exe, False)
             self._was_running[exe] = is_running
             if just_opened and not fired and not _launcher_just_approved():

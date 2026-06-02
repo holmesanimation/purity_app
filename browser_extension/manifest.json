@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Purity Intentional Browsing",
+  "version": "0.1.0",
+  "description": "Restricts browsing to the current Purity session whitelist.",
+  "permissions": [
+    "alarms",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "storage",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "blocked.html",
+        "blocked.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
