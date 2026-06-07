@@ -67,6 +67,7 @@ REASON_LABELS: list[tuple[str, str]] = [
     ("tired",               "Tired"),
     ("hungry",              "Hungry"),
     ("biological_urge",     "Biological Urge"),
+    ("aimless",             "Aimless"),
     ("lonely",              "Lonely"),
     ("discouraged",         "Discouraged"),
     ("anxious",             "Anxious"),

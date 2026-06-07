@@ -781,8 +781,9 @@ class EncouragementEditorDialog(QDialog):
     def _on_save(self) -> None:
         data = self._collect_form_data()
 
-        # Validate: all fields required
-        missing = [k for k, v in data.items() if k != "subject" and not v]
+        # Validate: all fields required except optional ones
+        _OPTIONAL = {"subject", "note", "background"}
+        missing = [k for k, v in data.items() if k not in _OPTIONAL and not v]
         if missing:
             QMessageBox.warning(
                 self,

@@ -13,6 +13,12 @@
         --border: #d8d0c3;
         --accent: #315c3c;
         --accent-strong: #274a2f;
+        --block: #8b0000;
+        --block-bg: #fde8e8;
+        --block-border: #e8a0a0;
+        --warn: #8b4513;
+        --warn-bg: #fdf0e6;
+        --warn-border: #e8c9a0;
       }
 
       body {
@@ -57,6 +63,53 @@
         overflow-wrap: anywhere;
       }
 
+      .query-badge {
+        display: inline-block;
+        margin: 0 0 16px;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: var(--block-bg);
+        border: 1px solid var(--block-border);
+        color: var(--block);
+        font-size: 0.85rem;
+        letter-spacing: 0.03em;
+      }
+
+      .query-word {
+        display: inline-block;
+        margin: 14px 0 20px;
+        padding: 10px 18px;
+        border-radius: 12px;
+        background: var(--block-bg);
+        border: 1px solid var(--block-border);
+        color: var(--block);
+        font-size: 1.1rem;
+        font-style: italic;
+      }
+
+      .scripture {
+        margin: 14px 0 22px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: #f6f2e8;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-style: italic;
+        line-height: 1.7;
+      }
+
+      .scripture cite {
+        display: block;
+        margin-top: 8px;
+        font-style: normal;
+        font-size: 0.85rem;
+        color: var(--accent);
+      }
+
+      #query-block { display: none; }
+      #query-warn  { display: none; }
+      #url-block   { display: none; }
+
       .actions {
         display: flex;
         gap: 12px;
@@ -88,12 +141,48 @@
   </head>
   <body>
     <main class="card">
-      <h1>This URL was not whitelisted for this session. Are you sure?</h1>
-      <p>Choosing Yes adds it to the current Purity browsing session immediately.</p>
-      <div class="url" id="blocked-url"></div>
-      <div class="actions">
-        <button id="yes-btn" type="button">Yes</button>
-        <button id="no-btn" type="button">No</button>
+      <!-- Search query block mode -->
+      <div id="query-block">
+        <span class="query-badge">Search blocked</span>
+        <h1>Not this way.</h1>
+        <p>That search has been blocked to help you stay on track.</p>
+        <div class="query-word" id="blocked-query"></div>
+        <blockquote class="scripture">
+          “Whatever is true, whatever is honorable, whatever is just, whatever is pure,
+          whatever is lovely, whatever is commendable — if there is any excellence,
+          if there is anything worthy of praise, think about these things.”
+          <cite>— Philippians 4:8</cite>
+        </blockquote>
+        <div class="actions">
+          <button id="query-back-btn" type="button">Go back</button>
+        </div>
+      </div>
+      <!-- Search query warn mode -->
+      <div id="query-warn">
+        <span class="query-badge" style="background:var(--warn-bg);border-color:var(--warn-border);color:var(--warn)">Pause &amp; Reflect</span>
+        <h1 style="color:var(--warn)">Heads up.</h1>
+        <p>What you’re searching for may lead somewhere you don’t want to go.</p>
+        <div class="query-word" id="warn-query" style="background:var(--warn-bg);border-color:var(--warn-border);color:var(--warn)"></div>
+        <blockquote class="scripture">
+          “Whatever is true, whatever is honorable, whatever is just, whatever is pure,
+          whatever is lovely, whatever is commendable — if there is any excellence,
+          if there is anything worthy of praise, think about these things.”
+          <cite>— Philippians 4:8</cite>
+        </blockquote>
+        <div class="actions">
+          <button id="warn-back-btn" type="button" style="background:var(--accent);color:white">I choose better</button>
+          <button id="warn-proceed-btn" type="button" style="background:transparent;border:1px solid var(--border)">Search anyway</button>
+        </div>
+      </div>
+      <!-- URL whitelist block mode (default) -->
+      <div id="url-block">
+        <h1>This URL was not whitelisted for this session. Are you sure?</h1>
+        <p>Choosing Yes adds it to the current Purity browsing session immediately.</p>
+        <div class="url" id="blocked-url"></div>
+        <div class="actions">
+          <button id="yes-btn" type="button">Yes</button>
+          <button id="no-btn" type="button">No</button>
+        </div>
       </div>
     </main>
     <script src="blocked.js"></script>

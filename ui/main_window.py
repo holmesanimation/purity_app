@@ -94,7 +94,7 @@ _CHROME_PATHS = [
     Path.home() / r"AppData\Local\Google\Chrome\Application\chrome.exe",
 ]
 
-_EXTENSION_HEARTBEAT_GRACE_SECONDS = 20.0
+_EXTENSION_HEARTBEAT_GRACE_SECONDS = 0.0
 
 # ---------------------------------------------------------------------------
 # Supervisor watchdog constants
@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
         self._web_session_urls: list[str] = []
         self._web_session_duration_seconds: int | None = None
         self._web_session_heartbeat_grace_deadline: float | None = None
+        self._extension_launch_check_timer: QTimer | None = None
         self._panic_elevated: bool = False
         self._panic_last_override_count: int = 0
         self._panic_reminders = None  # initialised lazily on first use
@@ -234,7 +235,7 @@ class MainWindow(QMainWindow):
 
         self._extension_health_timer = QTimer(self)
         self._extension_health_timer.timeout.connect(self._enforce_extension_heartbeat)
-        self._extension_health_timer.start(10_000)
+        self._extension_health_timer.start(2_000)
 
         # 60-second heartbeat tick: note_clock + system.alive journal event
         if self._runtime is not None:
@@ -776,6 +777,7 @@ class MainWindow(QMainWindow):
                 proc = subprocess.Popen([str(chrome)] + list(args))
             else:
                 proc = subprocess.Popen(["chrome"] + list(args), shell=True)
+            self._start_extension_launch_check()
             if self._runtime is not None:
                 append_web_request_log(
                     self._runtime.data_root,
@@ -823,6 +825,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self._browser_session_manager is None:
             return
+        if self._extension_heartbeat_monitor is not None:
+            self._extension_heartbeat_monitor.clear()
         self._browser_session_manager.start_session(
             purpose=choice,
             allowed_urls=allowed_urls,
@@ -834,9 +838,39 @@ class MainWindow(QMainWindow):
         self._web_session_urls = []
         self._web_session_duration_seconds = None
         self._web_session_heartbeat_grace_deadline = None
+        self._cancel_extension_launch_check()
         if self._browser_session_manager is None:
             return
         self._browser_session_manager.clear_session()
+
+    def _start_extension_launch_check(self) -> None:
+        """Start a one-shot 5-second timer; if the extension hasn't sent a heartbeat
+        by then, the browser session is killed immediately."""
+        self._cancel_extension_launch_check()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._check_extension_at_launch)
+        timer.start(5_000)
+        self._extension_launch_check_timer = timer
+
+    def _cancel_extension_launch_check(self) -> None:
+        if self._extension_launch_check_timer is not None:
+            self._extension_launch_check_timer.stop()
+            self._extension_launch_check_timer = None
+
+    def _check_extension_at_launch(self) -> None:
+        self._extension_launch_check_timer = None
+        if self._extension_heartbeat_is_healthy():
+            return
+        if self._runtime is not None:
+            append_web_request_log(
+                self._runtime.data_root,
+                "extension_heartbeat.launch_check_failed",
+                "Extension not detected 5 seconds after Chrome opened — starting warning countdown.",
+                level="WARN",
+            )
+        if not self._web_timer_pill.is_warning_active:
+            self._web_timer_pill.start_extension_warning(30)
 
     def _extension_heartbeat_is_healthy(self) -> bool:
         if self._extension_heartbeat_monitor is None:

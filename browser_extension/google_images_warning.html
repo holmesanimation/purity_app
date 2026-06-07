@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Google Images Warning</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f1efe6;
+        --card: #fffdfa;
+        --text: #2f2a24;
+        --muted: #6d655b;
+        --border: #d8d0c3;
+        --accent: #315c3c;
+        --accent-strong: #274a2f;
+        --warn: #8b4513;
+        --warn-strong: #6b3410;
+      }
+
+      body {
+        font-family: Georgia, "Palatino Linotype", serif;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        margin: 0;
+        background:
+          radial-gradient(circle at top, rgba(139, 69, 19, 0.10), transparent 38%),
+          linear-gradient(180deg, #f8f5ed 0%, var(--bg) 100%);
+        color: var(--text);
+      }
+
+      .card {
+        width: min(560px, calc(100vw - 40px));
+        padding: 32px;
+        border-radius: 22px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        box-shadow: 0 18px 48px rgba(47, 42, 36, 0.12);
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 1.75rem;
+      }
+
+      .warning-badge {
+        display: inline-block;
+        margin: 0 0 16px;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: #fdf0e6;
+        border: 1px solid #e8c9a0;
+        color: var(--warn);
+        font-size: 0.85rem;
+        letter-spacing: 0.03em;
+      }
+
+      p {
+        margin: 0 0 12px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      .scripture {
+        margin: 16px 0 22px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: #f6f2e8;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-style: italic;
+        line-height: 1.7;
+      }
+
+      .scripture cite {
+        display: block;
+        margin-top: 8px;
+        font-style: normal;
+        font-size: 0.85rem;
+        color: var(--accent);
+      }
+
+      .actions {
+        display: flex;
+        gap: 12px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 20px;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      #yes-btn {
+        background: var(--warn);
+        color: white;
+      }
+
+      #yes-btn:hover {
+        background: var(--warn-strong);
+      }
+
+      #no-btn {
+        background: var(--accent);
+        color: white;
+      }
+
+      #no-btn:hover {
+        background: var(--accent-strong);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="warning-badge">Google Images Detected</div>
+      <h1>You know that Google Images is dangerous. Are you sure?</h1>
+      <p>
+        Image search can often become a gateway to temptation.
+        Consider using standard search results instead.
+      </p>
+      <blockquote class="scripture">
+        "Whatever is true, whatever is honorable, whatever is just, whatever is pure&hellip;
+        think about these things."
+        <cite>Philippians 4:8</cite>
+      </blockquote>
+      <div class="actions">
+        <button id="no-btn" type="button">No, go back</button>
+        <button id="yes-btn" type="button">Yes, continue anyway</button>
+      </div>
+    </main>
+    <script src="google_images_warning.js"></script>
+  </body>
+</html>
