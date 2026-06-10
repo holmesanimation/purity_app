@@ -52,3 +52,26 @@ def test_resolve_data_root_falls_back_to_default(tmp_path: Path, monkeypatch) ->
     resolved = resolve_purity_data_root(manager, environ={})
 
     assert resolved == tmp_path / ".purity"
+
+
+def test_build_manager_exposes_pulse_schedule_defaults(tmp_path: Path) -> None:
+    manager = build_purity_settings_manager(path=tmp_path / "settings.yaml")
+
+    assert manager.get("app.pulse", "morning_time") == "09:00"
+    assert manager.get("app.pulse", "afternoon_time") == "14:00"
+    assert manager.get("app.pulse", "evening_start_time") == "21:00"
+
+
+def test_build_manager_persists_saved_pulse_schedule_settings(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yaml"
+    manager = build_purity_settings_manager(path=settings_path)
+    manager.set("app.pulse", "morning_time", "08:30")
+    manager.set("app.pulse", "afternoon_time", "13:45")
+    manager.set("app.pulse", "evening_start_time", "20:30")
+    manager.save()
+
+    reloaded = build_purity_settings_manager(path=settings_path)
+
+    assert reloaded.get("app.pulse", "morning_time") == "08:30"
+    assert reloaded.get("app.pulse", "afternoon_time") == "13:45"
+    assert reloaded.get("app.pulse", "evening_start_time") == "20:30"

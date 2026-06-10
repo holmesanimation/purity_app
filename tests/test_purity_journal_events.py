@@ -15,6 +15,10 @@ from purity_app.services.journal_events import (
     emit_note_created,
     emit_app_started,
     emit_system_alive,
+    emit_pulse_prompted,
+    emit_pulse_submitted,
+    emit_pulse_note_submitted,
+    emit_pulse_reach_out_clicked,
     emit_panic_started,
     emit_panic_closed,
     emit_panic_reasons_selected,
@@ -50,6 +54,8 @@ def runtime(tmp_path: Path) -> PurityRuntime:
 
 
 class TestPurityJournalEvents:
+    _FAKE_PULSE_ID = "11112222-3333-4444-5555-666677778888"
+
     def test_chrome_opened_event(self, runtime: PurityRuntime, tmp_path: Path) -> None:
         emit_chrome_opened(runtime.journal, pid_count=3)
         runtime.journal.close_sinks()
@@ -114,6 +120,68 @@ class TestPurityJournalEvents:
         assert run_ids == {runtime.session.run_id}, (
             f"Expected single run_id {runtime.session.run_id!r}, got {run_ids}"
         )
+
+    def test_pulse_prompted_payload(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_pulse_prompted(
+            runtime.journal,
+            pulse_id=self._FAKE_PULSE_ID,
+            pulse_kind="morning",
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "pulse.prompted")
+        assert events, "No pulse.prompted event found"
+        payload = events[0]["payload"]
+        assert payload["pulse_id"] == self._FAKE_PULSE_ID
+        assert payload["pulse_kind"] == "morning"
+
+    def test_pulse_submitted_payload(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_pulse_submitted(
+            runtime.journal,
+            pulse_id=self._FAKE_PULSE_ID,
+            pulse_kind="evening",
+            reached_out=True,
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "pulse.submitted")
+        assert events, "No pulse.submitted event found"
+        payload = events[0]["payload"]
+        assert payload["pulse_id"] == self._FAKE_PULSE_ID
+        assert payload["pulse_kind"] == "evening"
+        assert payload["reached_out"] is True
+
+    def test_pulse_note_submitted_payload(self, runtime: PurityRuntime, tmp_path: Path) -> None:
+        emit_pulse_note_submitted(
+            runtime.journal,
+            pulse_id=self._FAKE_PULSE_ID,
+            pulse_kind="afternoon",
+        )
+        runtime.journal.close_sinks()
+
+        events = _lines_for_kind(tmp_path, "pulse.note_submitted")
+        assert events, "No pulse.note_submitted event found"
+        payload = events[0]["payload"]
+        assert payload["pulse_id"] == self._FAKE_PULSE_ID
+        assert payload["pulse_kind"] == "afternoon"
+
+    def test_pulse_reach_out_clicked_routes_to_pulse_jsonl(
+        self, runtime: PurityRuntime, tmp_path: Path
+    ) -> None:
+        emit_pulse_reach_out_clicked(
+            runtime.journal,
+            pulse_id=self._FAKE_PULSE_ID,
+            pulse_kind="evening",
+        )
+        runtime.journal.close_sinks()
+
+        pulse_files = list(tmp_path.rglob("pulse.jsonl"))
+        assert pulse_files, "pulse.jsonl not found under data root"
+
+        events = _lines_for_kind(tmp_path, "pulse.reach_out_clicked")
+        assert events
+        correlation = events[0].get("correlation") or {}
+        assert correlation.get("pulse_id") == self._FAKE_PULSE_ID
 
 
 class TestPanicJournalEvents:

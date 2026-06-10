@@ -21,6 +21,10 @@ KIND_CHROME_BLOCKED  = "chrome.blocked"
 KIND_POPUP_TRIGGERED = "popup.triggered"
 KIND_NOTE_CREATED    = "note.created"
 KIND_REVIEW_OPENED   = "review.opened"
+KIND_PULSE_PROMPTED  = "pulse.prompted"
+KIND_PULSE_SUBMITTED = "pulse.submitted"
+KIND_PULSE_NOTE_SUBMITTED = "pulse.note_submitted"
+KIND_PULSE_REACH_OUT_CLICKED = "pulse.reach_out_clicked"
 
 # Panic intervention kinds
 KIND_PANIC_STARTED            = "panic.started"
@@ -45,6 +49,10 @@ _PURITY_KINDS: frozenset = frozenset({
     KIND_POPUP_TRIGGERED,
     KIND_NOTE_CREATED,
     KIND_REVIEW_OPENED,
+    KIND_PULSE_PROMPTED,
+    KIND_PULSE_SUBMITTED,
+    KIND_PULSE_NOTE_SUBMITTED,
+    KIND_PULSE_REACH_OUT_CLICKED,
     KIND_PANIC_STARTED,
     KIND_PANIC_STATE_CHANGED,
     KIND_PANIC_REASONS_SELECTED,
@@ -91,6 +99,8 @@ class PurityJournalProfile(JournalProfile):
         return None
 
     def stream_for_kind(self, kind: str) -> str:
+        if kind.startswith("pulse."):
+            return "pulse"
         if kind.startswith("panic."):
             return "panic"
         return kind.split(".")[0] if "." in kind else "misc"

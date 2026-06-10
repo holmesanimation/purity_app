@@ -74,7 +74,8 @@
     {"phrase": "dominatrix", "weight": 90},
     {"phrase": "submissive", "weight": 90},
     {"phrase": "fetish", "weight": 90},
-    {"phrase": "kink", "weight": 90}
+    {"phrase": "kink", "weight": 90},
+    {"phrase": "down on",   "weight": 30, "expand": true}
   ],
   "soft_risk": [
     {"phrase": "lonely",         "weight": 20},

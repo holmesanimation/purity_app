@@ -25,16 +25,25 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 from shane_common.preferences.manager import SettingsManager
+from shane_common.notes.notes_writer import NoteType
 from shane_common.ui.preferences.preferences_dialog import PreferencesDialog
 from shane_common.watchdog.heartbeat_reader import HeartbeatReader
 from services.browser_session import BrowserSessionManager, ExtensionHeartbeatMonitor
 from services.mock_state import MockAppState
-from services.notes_setup import notes_writer, notes_repo
+from services.notes_setup import make_notes_writer, notes_writer, notes_repo
 from services.panic_session import PanicSession, PanicSessionOutcome, PanicSessionState
+from services.pulse_activity import UserActivityMonitor
+from services.pulse_manager import PulseManager
+from services.pulse_notifications import (
+    format_notification_details,
+    make_pulse_reach_out_event,
+    make_web_session_reach_out_event,
+)
 from services.settings_schemas import (
     build_purity_settings_manager,
     get_kill_browsers_on_startup,
@@ -42,6 +51,7 @@ from services.settings_schemas import (
     get_web_session_timeout_seconds,
     resolve_purity_data_root,
 )
+from services.telegram_notify import build_telegram_adapter_from_settings
 from services.web_requests import (
     append_web_request_log,
     mark_app_control_request_done,
@@ -69,7 +79,9 @@ from styles.theme import (
 from ui.intervention.panic_button import PanicButton
 from ui.intervention.popup_manager import PopupManager
 from ui.intervention.web_popup import WebPopup
+from ui.left_dock_dashboard import LeftDockDashboard
 from ui.notes.note_dialog import NoteDialog
+from ui.pulse_dialog import PulseDialog
 from ui.notes.notes_browser_window import NotesBrowserWindow
 from ui.reflection.dashboard import ReflectionDashboard
 from ui.review.review_window import ReviewWindow
@@ -101,7 +113,7 @@ _EXTENSION_HEARTBEAT_GRACE_SECONDS = 0.0
 # ---------------------------------------------------------------------------
 _SUPERVISOR_HEARTBEAT_GRACE_SECONDS = 30.0
 _SUPERVISOR_STALE_S = 15.0
-_SUPERVISOR_DEAD_S = 30.0
+_SUPERVISOR_DEAD_S = 10.0
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -140,6 +152,18 @@ def _launch_supervisor(data_root: Path) -> None:
     """Spawn supervisor.py as a detached child process."""
     import json as _json
 
+    creationflags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+
+    try:
+        subprocess.Popen(
+            ["schtasks", "/Run", "/TN", "PuritySupervisor"],
+            creationflags=creationflags,
+        )
+        _append_startup_log(data_root, "Supervisor watchdog launch requested via Scheduled Task.")
+        return
+    except Exception:
+        pass
+
     # This module lives at ui/main_window.py — one level below the project root.
     _project_root = Path(__file__).parent.parent
     supervisor_path = _project_root / "supervisor.py"
@@ -152,9 +176,9 @@ def _launch_supervisor(data_root: Path) -> None:
         "--data-root", str(data_root),
         "--purity-app-cmd", purity_app_cmd,
     ]
-    creationflags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
     try:
         subprocess.Popen(cmd, creationflags=creationflags)
+        _append_startup_log(data_root, "Supervisor watchdog launched via direct process spawn.")
     except Exception:
         pass
 
@@ -181,6 +205,7 @@ class MainWindow(QMainWindow):
         self._tray_app = None
         self._web_session_reason: str = ""
         self._web_session_choice: str = ""
+        self._web_session_verse_title: str = ""
         self._web_session_urls: list[str] = []
         self._web_session_duration_seconds: int | None = None
         self._web_session_heartbeat_grace_deadline: float | None = None
@@ -201,8 +226,14 @@ class MainWindow(QMainWindow):
         self._review_win: ReviewWindow | None = None
         self._notes_browser: NotesBrowserWindow | None = None
         self._log_viewer_win: PurityLogViewerWindow | None = None
+        self._pulse_manager: PulseManager | None = None
+        self._pulse_dialog: PulseDialog | None = None
+        self._pulse_notes_writer = notes_writer
 
         self._apply_live_settings_from_manager()
+
+        if self._runtime is not None:
+            self._pulse_notes_writer = make_notes_writer(run_id=self._runtime.session.run_id)
 
         # Log normalizer sink — register before _build_ui so the sink is ready.
         self._log_sink = PurityLogNormalizerSink()
@@ -212,6 +243,10 @@ class MainWindow(QMainWindow):
         self._center_on_screen()
         self._build_menu_bar()
         self._build_ui()
+
+        # Left-edge sliding dashboard — kept as a top-level tool window.
+        self._left_dock = LeftDockDashboard()
+        self._left_dock.show()
 
         # Web session timer pill — hidden until a session is approved.
         self._web_timer_pill = WebTimerPill(parent=None)
@@ -254,6 +289,19 @@ class MainWindow(QMainWindow):
             self._panic_elevation_timer = QTimer(self)
             self._panic_elevation_timer.timeout.connect(self._poll_panic_elevation)
             self._panic_elevation_timer.start(500)
+
+            if self._settings_manager is not None:
+                self._pulse_manager = PulseManager(
+                    data_root=self._runtime.data_root,
+                    settings_manager=self._settings_manager,
+                    activity_monitor=UserActivityMonitor(
+                        clock_fn=lambda: datetime.now().astimezone(),
+                    ),
+                    journal=self._runtime.journal,
+                )
+                self._pulse_timer = QTimer(self)
+                self._pulse_timer.timeout.connect(self._poll_pulse_due)
+                self._pulse_timer.start(5_000)
 
             # Supervisor watchdog health check.
             # Grace period is reset to 0 so the check is active immediately;
@@ -312,11 +360,19 @@ class MainWindow(QMainWindow):
         edit_encouragements_action.triggered.connect(self._open_encouragement_editor)
         tools_menu.addAction(edit_encouragements_action)
 
+        launch_pulse_action = QAction("Launch Pulse", self)
+        launch_pulse_action.triggered.connect(self._launch_manual_pulse)
+        tools_menu.addAction(launch_pulse_action)
+
         debug_menu = menu_bar.addMenu("Debug")
 
         expire_web_action = QAction("Expire Web Session", self)
         expire_web_action.triggered.connect(self._debug_expire_web_session)
         debug_menu.addAction(expire_web_action)
+
+        honor_dialog_action = QAction("Test Honor Dialog", self)
+        honor_dialog_action.triggered.connect(self._debug_web_session_honor_dialog)
+        debug_menu.addAction(honor_dialog_action)
 
     def _open_encouragement_editor(self) -> None:
         from services.panic_reminders import PanicReminders
@@ -344,6 +400,9 @@ class MainWindow(QMainWindow):
     def _debug_expire_web_session(self) -> None:
         self._web_timer_pill.stop_session()
         self._on_web_session_expired()
+
+    def _debug_web_session_honor_dialog(self) -> None:
+        self._show_web_session_honor_dialog("I was looking up Bible verses online")
 
     def _apply_live_settings_from_manager(self) -> None:
         if self._settings_manager is None:
@@ -420,14 +479,14 @@ class MainWindow(QMainWindow):
 
     def _build_sidebar(self) -> QGroupBox:
         sidebar = QGroupBox("Demo Triggers")
-        sidebar.setFixedWidth(160)
+        sidebar.setFixedWidth(170)
         sidebar.setStyleSheet(
             f"QGroupBox {{"
             f"  background-color: {COLOR_SURFACE};"
             f"  border-left: 1px solid {COLOR_BORDER};"
             f"  border-radius: 0px;"
             f"  margin-top: 0px;"
-            f"  padding: 12px 8px 8px 8px;"
+            f"  padding: 4px 0px 4px 0px;"
             f"  font-size: {FONT_SIZE_SMALL}pt;"
             f"}}"
             f"QGroupBox::title {{"
@@ -436,9 +495,21 @@ class MainWindow(QMainWindow):
             f"  padding: 0 4px;"
             f"}}"
         )
-        vbox = QVBoxLayout(sidebar)
-        vbox.setSpacing(8)
-        vbox.setContentsMargins(8, 16, 8, 8)
+        outer = QVBoxLayout(sidebar)
+        outer.setContentsMargins(0, 14, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        inner = QWidget()
+        scroll.setWidget(inner)
+        vbox = QVBoxLayout(inner)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(6, 4, 6, 4)
 
         for label, popup_type in _POPUP_BUTTONS:
             btn = QPushButton(label)
@@ -461,12 +532,34 @@ class MainWindow(QMainWindow):
         browse_notes_btn.clicked.connect(self._open_notes_browser)
         vbox.addWidget(browse_notes_btn)
 
+        pulse_btn = QPushButton("Pulse")
+        pulse_btn.clicked.connect(self._launch_manual_pulse)
+        vbox.addWidget(pulse_btn)
+
         log_btn = QPushButton("📋 Journal Viewer")
         log_btn.clicked.connect(self._open_log_viewer)
         vbox.addWidget(log_btn)
 
+        vbox.addSpacing(8)
+
+        tg_shutdown_btn = QPushButton("📨 TG: Shutdown")
+        tg_shutdown_btn.clicked.connect(self._test_telegram_shutdown)
+        vbox.addWidget(tg_shutdown_btn)
+
+        tg_crash_btn = QPushButton("📨 TG: App Down")
+        tg_crash_btn.clicked.connect(self._test_telegram_app_down)
+        vbox.addWidget(tg_crash_btn)
+
+        tg_supervisor_btn = QPushButton("📨 TG: Supervisor Down")
+        tg_supervisor_btn.clicked.connect(self._test_telegram_supervisor_shutdown)
+        vbox.addWidget(tg_supervisor_btn)
+
+        honor_debug_btn = QPushButton("🧪 Honor Dialog")
+        honor_debug_btn.clicked.connect(self._debug_web_session_honor_dialog)
+        vbox.addWidget(honor_debug_btn)
+
         vbox.addStretch()
-        return sidebar
+        return sidebar  # type: ignore[return-value]
 
     def _tick_alive(self):
         """Fired every 60 s: update run-tail clock and emit system.alive."""
@@ -530,6 +623,7 @@ class MainWindow(QMainWindow):
             restore_windows(minimized_hwnds)
             self._web_session_reason = reason_text
             self._web_session_choice = selected_choice
+            self._web_session_verse_title = getattr(popup, "verse_title", "")
             self._web_session_urls = allowed_urls
             self._web_session_duration_seconds = duration_seconds
             self._start_browser_session_state(choice=selected_choice, allowed_urls=allowed_urls, duration_seconds=duration_seconds)
@@ -765,6 +859,7 @@ class MainWindow(QMainWindow):
                 )
             self._web_session_reason = reason_text
             self._web_session_choice = selected_choice
+            self._web_session_verse_title = getattr(popup, "verse_title", "")
             self._web_session_urls = allowed_urls
             self._web_session_duration_seconds = duration_seconds
             self._start_browser_session_state(choice=selected_choice, allowed_urls=allowed_urls, duration_seconds=duration_seconds)
@@ -933,6 +1028,7 @@ class MainWindow(QMainWindow):
                 timeout = get_web_session_timeout_seconds(mgr)
             except Exception:
                 pass
+        self._web_timer_pill.set_session_title(self._web_session_verse_title)
         self._web_timer_pill.set_timeout(timeout)
         self._web_timer_pill.start_session()
 
@@ -954,11 +1050,14 @@ class MainWindow(QMainWindow):
             )
             self._start_web_timer(self._web_session_duration_seconds)
         else:
+            reason = self._web_session_reason
             taskkill_processes(list(_WATCHED_BROWSERS))
             self._web_timer_pill.stop_session()
             self._web_session_reason = ""
             self._web_session_choice = ""
             self._clear_browser_session_state()
+            if reason:
+                self._show_web_session_honor_dialog(reason)
 
     def _poll_browser_running(self) -> None:
         """Hide the pill if no watched browser processes are running."""
@@ -970,8 +1069,28 @@ class MainWindow(QMainWindow):
             list_process_pids(exe) for exe in _WATCHED_BROWSERS
         )
         if not any_running:
+            reason = self._web_session_reason
             self._web_timer_pill.stop_session()
             self._clear_browser_session_state()
+            if reason:
+                self._show_web_session_honor_dialog(reason)
+
+    def _show_web_session_honor_dialog(self, reason: str) -> None:
+        """Show the post-session accountability dialog."""
+        from ui.intervention.web_session_honor_dialog import WebSessionHonorDialog
+        from services.telegram_notify import build_telegram_adapter_from_settings
+
+        def _reach_out() -> None:
+            if self._settings_manager is None:
+                return
+            telegram = build_telegram_adapter_from_settings(
+                self._settings_manager,
+                format_message=format_notification_details,
+            )
+            telegram.send(make_web_session_reach_out_event(reason=reason))
+
+        dlg = WebSessionHonorDialog(reason=reason, reach_out_callback=_reach_out)
+        dlg.exec()
 
     def _open_review(self):
         if self._review_win is not None and self._review_win.isVisible():
@@ -983,6 +1102,105 @@ class MainWindow(QMainWindow):
 
     def _open_note_dialog(self):
         NoteDialog(writer=notes_writer, owner="purity", parent=self).exec()
+
+    def _poll_pulse_due(self) -> None:
+        if self._pulse_manager is None:
+            return
+        pending = self._pulse_manager.poll_due_pulse()
+        if pending is None:
+            return
+        self._open_pulse_dialog(pending)
+
+    def _launch_manual_pulse(self) -> None:
+        if self._pulse_manager is None:
+            return
+        pending = self._pulse_manager.create_manual_pulse()
+        if pending is None:
+            return
+        self._open_pulse_dialog(pending)
+
+    def _open_pulse_dialog(self, pending) -> None:
+        if self._pulse_dialog is not None and self._pulse_dialog.isVisible():
+            self._pulse_dialog.raise_()
+            self._pulse_dialog.activateWindow()
+            return
+
+        self._pulse_dialog = PulseDialog(
+            pending=pending,
+            submit_pulse=lambda **payload: self._handle_pulse_submit(pending, **payload),
+            submit_note=lambda text: self._handle_pulse_note_submit(pending, text),
+            send_reach_out=lambda sliders, text: self._handle_pulse_reach_out(pending, sliders, text),
+            parent=None,
+        )
+        self._pulse_dialog.finished.connect(
+            lambda _: setattr(self, "_pulse_dialog", None)
+        )
+        self._pulse_dialog.show()
+        self._pulse_dialog.raise_()
+        self._pulse_dialog.activateWindow()
+
+    def _handle_pulse_submit(
+        self,
+        pending,
+        *,
+        sliders,
+        answers,
+        note_text,
+        reach_out_text,
+        reach_out_sent,
+        evening_duration_choice,
+    ) -> None:
+        if self._pulse_manager is None:
+            return
+        self._pulse_manager.submit_pulse(
+            pending=pending,
+            sliders=sliders,
+            answers=answers,
+            note_text=note_text,
+            reach_out_text=reach_out_text,
+            reach_out_sent=reach_out_sent,
+            evening_duration_choice=evening_duration_choice,
+        )
+
+    def _handle_pulse_note_submit(self, pending, note_text: str) -> None:
+        note = self._pulse_notes_writer.build_note(
+            note_type=NoteType.GENERAL,
+            text=note_text,
+            context={
+                "feature": "pulse",
+                "pulse_id": pending.pulse_id,
+                "pulse_kind": pending.pulse_kind.value,
+            },
+        )
+        self._pulse_notes_writer.commit(note)
+        if self._runtime is not None:
+            from services.journal_events import emit_note_created
+
+            emit_note_created(self._runtime.journal, owner="pulse")
+        if self._pulse_manager is not None:
+            self._pulse_manager.submit_note(
+                pulse_id=pending.pulse_id,
+                pulse_kind=pending.pulse_kind,
+            )
+
+    def _handle_pulse_reach_out(self, pending, sliders, message: str) -> None:
+        if self._settings_manager is None:
+            return
+        telegram = build_telegram_adapter_from_settings(
+            self._settings_manager,
+            format_message=format_notification_details,
+        )
+        telegram.send(
+            make_pulse_reach_out_event(
+                sliders=sliders,
+                user_message=message,
+            )
+        )
+        if self._pulse_manager is not None:
+            self._pulse_manager.record_reach_out(
+                pulse_id=pending.pulse_id,
+                pulse_kind=pending.pulse_kind,
+            )
 
     def _open_notes_browser(self):
         if self._notes_browser is None:
@@ -1118,6 +1336,7 @@ class MainWindow(QMainWindow):
 
             if not self._supervisor_down_alerted:
                 self._supervisor_down_alerted = True
+                self._notify_supervisor_down()
                 self._show_supervisor_down_dialog()
 
         except Exception as exc:
@@ -1125,6 +1344,30 @@ class MainWindow(QMainWindow):
                 self._runtime.data_root,
                 f"_check_supervisor_heartbeat: unhandled exception: {exc}",
             )
+
+    def _notify_supervisor_down(self) -> None:
+        """Send a Telegram notification that the supervisor is down."""
+        import os, urllib.parse, urllib.request
+        if self._settings_manager is None:
+            return
+        token = os.environ.get("PURITY_TELEGRAM_TOKEN", "").strip()
+        chat_ids_str = str(self._settings_manager.get("app.telegram", "telegram_chat_ids") or "")
+        chat_ids = [c.strip() for c in chat_ids_str.split(",") if c.strip()]
+        if not token or not chat_ids:
+            return
+        text = "[WARNING] purity_supervisor.down\nscope=global\ndetails=reason=heartbeat.dead"
+        for chat_id in chat_ids:
+            try:
+                params = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+                req = urllib.request.Request(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=params, method="POST",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp.read()
+            except Exception:
+                pass
 
     def _show_supervisor_down_dialog(self) -> None:
         """Show a warning dialog and offer to relaunch the supervisor."""
@@ -1144,6 +1387,63 @@ class MainWindow(QMainWindow):
             _launch_supervisor(self._runtime.data_root)
             self._supervisor_seen_healthy = False
             self._supervisor_down_alerted = False
+
+    # ------------------------------------------------------------------
+    # Telegram test buttons
+    # ------------------------------------------------------------------
+
+    def _send_test_telegram(self, kind: str, details: str) -> None:
+        import os
+        import urllib.parse
+        import urllib.request
+
+        if self._settings_manager is None:
+            QMessageBox.warning(self, "Telegram Test", "No settings manager available.")
+            return
+
+        token = os.environ.get("PURITY_TELEGRAM_TOKEN", "").strip()
+        chat_ids_str = str(self._settings_manager.get("app.telegram", "telegram_chat_ids") or "")
+        chat_ids = [c.strip() for c in chat_ids_str.split(",") if c.strip()]
+
+        if not token:
+            QMessageBox.warning(
+                self, "Telegram Test",
+                "PURITY_TELEGRAM_TOKEN env var is not set.\n\nSet it and restart Purity."
+            )
+            return
+        if not chat_ids:
+            QMessageBox.warning(
+                self, "Telegram Test",
+                "No chat IDs configured.\n\nSet telegram_chat_ids in Preferences → app.telegram."
+            )
+            return
+
+        text = f"[TEST] {kind}\ndetails={details}"
+        errors = []
+        for chat_id in chat_ids:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            params = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+            req = urllib.request.Request(url, data=params, method="POST",
+                                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp.read()
+            except Exception as exc:
+                errors.append(f"chat_id={chat_id}: {exc}")
+
+        if errors:
+            QMessageBox.warning(self, "Telegram Test", "Send failed:\n\n" + "\n".join(errors))
+        else:
+            QMessageBox.information(self, "Telegram Test", f"Sent to {len(chat_ids)} chat(s): {kind}")
+
+    def _test_telegram_shutdown(self) -> None:
+        self._send_test_telegram("purity_app.shutdown", details="reason=test.button")
+
+    def _test_telegram_app_down(self) -> None:
+        self._send_test_telegram("purity_app.down", details="reason=test.button")
+
+    def _test_telegram_supervisor_shutdown(self) -> None:
+        self._send_test_telegram("purity_supervisor.shutdown", details="reason=test.button")
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         app = QApplication.instance()

@@ -19,6 +19,10 @@ from services.journaling_profile import (
     KIND_POPUP_TRIGGERED,
     KIND_NOTE_CREATED,
     KIND_REVIEW_OPENED,
+    KIND_PULSE_PROMPTED,
+    KIND_PULSE_SUBMITTED,
+    KIND_PULSE_NOTE_SUBMITTED,
+    KIND_PULSE_REACH_OUT_CLICKED,
     KIND_PANIC_STARTED,
     KIND_PANIC_STATE_CHANGED,
     KIND_PANIC_REASONS_SELECTED,
@@ -103,6 +107,80 @@ def emit_note_created(
 
 def emit_review_opened(j: "JournalService") -> None:
     j.emit(KIND_REVIEW_OPENED, {}, source="review")
+
+
+def _pulse_correlation(pulse_id: str) -> dict:
+    return {"pulse_id": pulse_id}
+
+
+def emit_pulse_prompted(
+    j: "JournalService",
+    *,
+    pulse_id: str,
+    pulse_kind: str,
+) -> None:
+    j.emit(
+        KIND_PULSE_PROMPTED,
+        {
+            "pulse_id": pulse_id,
+            "pulse_kind": pulse_kind,
+        },
+        source="pulse",
+        correlation=_pulse_correlation(pulse_id),
+    )
+
+
+def emit_pulse_submitted(
+    j: "JournalService",
+    *,
+    pulse_id: str,
+    pulse_kind: str,
+    reached_out: bool,
+) -> None:
+    j.emit(
+        KIND_PULSE_SUBMITTED,
+        {
+            "pulse_id": pulse_id,
+            "pulse_kind": pulse_kind,
+            "reached_out": bool(reached_out),
+        },
+        source="pulse",
+        correlation=_pulse_correlation(pulse_id),
+    )
+
+
+def emit_pulse_note_submitted(
+    j: "JournalService",
+    *,
+    pulse_id: str,
+    pulse_kind: str,
+) -> None:
+    j.emit(
+        KIND_PULSE_NOTE_SUBMITTED,
+        {
+            "pulse_id": pulse_id,
+            "pulse_kind": pulse_kind,
+        },
+        source="pulse",
+        correlation=_pulse_correlation(pulse_id),
+    )
+
+
+def emit_pulse_reach_out_clicked(
+    j: "JournalService",
+    *,
+    pulse_id: str,
+    pulse_kind: str,
+) -> None:
+    j.emit(
+        KIND_PULSE_REACH_OUT_CLICKED,
+        {
+            "pulse_id": pulse_id,
+            "pulse_kind": pulse_kind,
+        },
+        source="pulse",
+        correlation=_pulse_correlation(pulse_id),
+    )
 
 
 # ---------------------------------------------------------------------------

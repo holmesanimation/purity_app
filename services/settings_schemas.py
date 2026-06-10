@@ -10,6 +10,8 @@ from shane_common.preferences import SettingDefinition, SettingsCategory, Settin
 
 
 _CATEGORY_ID = "app.general"
+_TELEGRAM_CATEGORY_ID = "app.telegram"
+_PULSE_CATEGORY_ID = "app.pulse"
 _DEFAULT_PERMITTED_BROWSERS = ["chrome.exe"]
 
 
@@ -80,6 +82,55 @@ def get_purity_general_category() -> SettingsCategory:
     )
 
 
+def get_purity_telegram_category() -> SettingsCategory:
+    return SettingsCategory(
+        category_id=_TELEGRAM_CATEGORY_ID,
+        label="Telegram",
+        definitions=[
+            SettingDefinition(
+                key="telegram_chat_ids",
+                type="str",
+                default="",
+                label="Telegram Chat IDs",
+                description=(
+                    "Comma-separated Telegram chat IDs (group or user). "
+                    "Token is read from PURITY_TELEGRAM_TOKEN env var."
+                ),
+            ),
+        ],
+    )
+
+
+def get_purity_pulse_category() -> SettingsCategory:
+    return SettingsCategory(
+        category_id=_PULSE_CATEGORY_ID,
+        label="Pulse",
+        definitions=[
+            SettingDefinition(
+                key="morning_time",
+                type="str",
+                default="09:00",
+                label="Morning Pulse Time",
+                description="Local time when the Morning Pulse becomes eligible.",
+            ),
+            SettingDefinition(
+                key="afternoon_time",
+                type="str",
+                default="14:00",
+                label="Afternoon Pulse Time",
+                description="Local time when the Afternoon Pulse becomes eligible.",
+            ),
+            SettingDefinition(
+                key="evening_start_time",
+                type="str",
+                default="21:00",
+                label="Evening Pulse Start Time",
+                description="Local time when the Evening Pulse becomes eligible.",
+            ),
+        ],
+    )
+
+
 def build_purity_settings_manager(
     *,
     app_id: str = "purity_app",
@@ -90,6 +141,8 @@ def build_purity_settings_manager(
     else:
         manager = SettingsManager(app_id=app_id)
     manager.register_category(get_purity_general_category())
+    manager.register_category(get_purity_telegram_category())
+    manager.register_category(get_purity_pulse_category())
     manager.load()
     return manager
 

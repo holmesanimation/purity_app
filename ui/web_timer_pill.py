@@ -32,8 +32,9 @@ class WebTimerPill(FloatingStatusPill):
     def __init__(self, timeout_seconds: int = 300, parent=None) -> None:
         super().__init__(
             parent=parent,
-            width=180,
-            height=36,
+            width=200,  # resized dynamically in set_session_title / start_session
+            height=72,
+            corner_radius=16,
             initial_text="Web 00:00",
             initial_color=_COLOR_ACTIVE,
             tooltip=(
@@ -45,6 +46,12 @@ class WebTimerPill(FloatingStatusPill):
             position_x_key=_POS_X_KEY,
             position_y_key=_POS_Y_KEY,
         )
+        # Increase label font to match the larger pill
+        self._label.setStyleSheet(
+            "color: #ffffff; font-weight: bold; font-size: 22px;"
+            " background: transparent;"
+        )
+        self._session_title: str = ""
         self._timeout_seconds = timeout_seconds
         self._remaining: int = timeout_seconds
         self._main_window = None  # set by caller
@@ -84,6 +91,11 @@ class WebTimerPill(FloatingStatusPill):
     def set_main_window(self, window) -> None:
         self._main_window = window
 
+    def set_session_title(self, title: str) -> None:
+        """Set the verse/encouragement title shown as a prefix in the pill."""
+        self._session_title = str(title)
+        self._resize_to_content()
+
     def set_timeout(self, seconds: int) -> None:
         """Update the session timeout (takes effect on next start_session)."""
         self._timeout_seconds = seconds
@@ -91,7 +103,15 @@ class WebTimerPill(FloatingStatusPill):
     def start_session(self) -> None:
         """Start (or restart) a new countdown and make the pill visible."""
         self._remaining = self._timeout_seconds
+        self._resize_to_content()
         self._update_label()
+        # Always anchor to top-center of the primary screen
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            sg = screen.availableGeometry()
+            x = sg.left() + (sg.width() - self.width()) // 2
+            y = sg.top() + 8
+            self.move(x, y)
         self.show()
         self._tick_timer.start()
 
@@ -169,7 +189,11 @@ class WebTimerPill(FloatingStatusPill):
     def _update_label(self) -> None:
         remaining = max(0, self._remaining)
         mins, secs = divmod(remaining, 60)
-        text = f"Web {mins:02d}:{secs:02d}"
+        countdown = f"{mins:02d}:{secs:02d}"
+        if self._session_title:
+            text = f"{self._session_title} – {countdown}"
+        else:
+            text = f"Web {countdown}"
         if remaining <= 0:
             color = _COLOR_EXPIRED
         elif remaining <= 60:
@@ -177,6 +201,20 @@ class WebTimerPill(FloatingStatusPill):
         else:
             color = _COLOR_ACTIVE
         self.update_status(text, color)
+
+    def _resize_to_content(self) -> None:
+        """Resize pill width to snugly fit the current title + timer text."""
+        from PySide6.QtGui import QFont, QFontMetrics
+        # Sample worst-case timer suffix length
+        sample = f"{self._session_title} \u2013 00:00" if self._session_title else "Web 00:00"
+        font = QFont()
+        font.setBold(True)
+        font.setPixelSize(22)
+        fm = QFontMetrics(font)
+        text_w = fm.horizontalAdvance(sample)
+        # 14px left margin + ~18px dot + 6px spacing + text + 14px right padding
+        new_w = max(200, text_w + 52)
+        self.setFixedSize(new_w, self._pill_h)
 
     def _save_position(self) -> None:
         settings = QSettings(_ORG, _APP)
