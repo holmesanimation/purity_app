@@ -52,64 +52,6 @@ from styles.theme import (
 )
 
 # ---------------------------------------------------------------------------
-# Verse data  (title, reference, bare verse text)
-# ---------------------------------------------------------------------------
-
-_WEB_VERSES: dict[str, tuple[str, str, str]] = {
-    "internet_default": (
-        "You are the salt of the earth",
-        "2 Timothy 2:21",
-        "If anyone cleanses himself from what is dishonorable, he will be a vessel for honorable use, "
-        "set apart as holy, useful to the master of the house, ready for every good work.",
-    ),
-    "home_alone": (
-        "You are never truly alone",
-        "Deuteronomy 31:6",
-        "The Lord your God goes with you; He will never leave you nor forsake you.",
-    ),
-    "triggering_content": (
-        "You can turn away — that choice is strength",
-        "2 Timothy 2:22",
-        "Flee from youthful passions and pursue righteousness, faith, love, and peace.",
-    ),
-    "tired": (
-        "Rest is a gift, not a weakness",
-        "Matthew 11:28",
-        "Come to me, all who labor and are heavy laden, and I will give you rest.",
-    ),
-    "biological_urge": (
-        "The urge is not a command. You have more power than it",
-        "1 Corinthians 10:13",
-        "God is faithful; He will not let you be tempted beyond what you can bear.",
-    ),
-    "lonely": (
-        "Loneliness is real — and God sees it",
-        "Psalm 34:18",
-        "The Lord is near to the brokenhearted and saves the crushed in spirit.",
-    ),
-    "discouraged": (
-        "Discouragement is not the final word",
-        "Philippians 4:6",
-        "Do not be anxious about anything, but in every situation, by prayer, present your requests to God.",
-    ),
-    "anxious": (
-        "Peace is available to you right now",
-        "John 14:27",
-        "Peace I leave with you; my peace I give you. Do not let your hearts be troubled.",
-    ),
-    "angry": (
-        "Anger is worth listening to — but not obeying right now",
-        "Ephesians 4:26",
-        "In your anger do not sin. Do not let the sun go down while you are still angry.",
-    ),
-    "avoiding_something": (
-        "Avoidance keeps the weight on. One small step forward is enough",
-        "Proverbs 3:5",
-        "Trust in the Lord with all your heart and lean not on your own understanding.",
-    ),
-}
-
-# ---------------------------------------------------------------------------
 # NL helpers  (duplicated here to keep this file self-contained)
 # ---------------------------------------------------------------------------
 
@@ -173,9 +115,9 @@ class VerseMemoryWidget(QWidget):
     press "New Verse".
     """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, bible_library=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._verse_title: str = ""
+        self._bible_library = bible_library
         self._verse_ref: str = ""
         self._verse_text: str = ""
         self._verse_words: list[str] = []
@@ -191,15 +133,29 @@ class VerseMemoryWidget(QWidget):
     # -- public API --------------------------------------------------------
 
     def load_random_verse(self) -> None:
-        key = random.choice(list(_WEB_VERSES.keys()))
-        self.load_verse(key)
+        if not self._bible_library:
+            self._ref_lbl.setText("No Bible library available.")
+            return
+        keys = self._bible_library.get_memorizing_list()
+        if not keys:
+            self._verse_ref = ""
+            self._verse_text = ""
+            self._verse_words = []
+            self._ref_lbl.setText("No verses marked for memorization.")
+            self._verse_display.hide()
+            return
+        self.load_verse(random.choice(keys))
 
     def load_verse(self, key: str) -> None:
-        title, ref, text = _WEB_VERSES.get(key, _WEB_VERSES["internet_default"])
-        self._verse_title = title
-        self._verse_ref = ref
-        self._verse_text = text
-        self._verse_words = _tokenize(text)
+        if not self._bible_library:
+            return
+        entry = self._bible_library.get_verse(key)
+        if not entry:
+            return
+        latest = self._bible_library.get_latest_version(key)
+        self._verse_ref = entry.get("display", key)
+        self._verse_text = latest["text"] if latest else ""
+        self._verse_words = _tokenize(self._verse_text)
         self._verse_accuracy = 0
         self._hint_offset = 0
         self._bad_indices = []
@@ -224,22 +180,24 @@ class VerseMemoryWidget(QWidget):
         )
         vf = QVBoxLayout(verse_frame)
         vf.setContentsMargins(14, 12, 14, 12)
-        vf.setSpacing(4)
-
-        self._title_lbl = QLabel()
-        self._title_lbl.setWordWrap(True)
-        self._title_lbl.setStyleSheet(
-            f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
-            f"font-size: {FONT_SIZE_LARGE}pt; font-weight: 700; background: transparent;"
-        )
-        vf.addWidget(self._title_lbl)
+        vf.setSpacing(8)
 
         self._ref_lbl = QLabel()
         self._ref_lbl.setStyleSheet(
-            f"color: {COLOR_TEXT_MUTED}; font-family: '{FONT_FAMILY}';"
-            f"font-size: {FONT_SIZE_NORMAL}pt; font-style: italic; background: transparent;"
+            f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
+            f"font-size: {FONT_SIZE_NORMAL}pt; font-weight: 700; background: transparent;"
         )
         vf.addWidget(self._ref_lbl)
+
+        self._verse_display = QLabel("")
+        self._verse_display.setWordWrap(True)
+        self._verse_display.setTextFormat(Qt.TextFormat.RichText)
+        self._verse_display.setStyleSheet(
+            f"font-family: 'Georgia'; font-size: {FONT_SIZE_LARGE}pt;"
+            f" font-style: italic; color: {COLOR_TEXT_MUTED}; background: transparent;"
+        )
+        self._verse_display.hide()
+        vf.addWidget(self._verse_display)
 
         outer.addWidget(verse_frame)
 
@@ -295,17 +253,6 @@ class VerseMemoryWidget(QWidget):
         self._hint_label.hide()
         outer.addWidget(self._hint_label)
 
-        # ── Full verse display (shown after Compare) ─────────────────
-        self._verse_display = QLabel("")
-        self._verse_display.setWordWrap(True)
-        self._verse_display.setTextFormat(Qt.TextFormat.RichText)
-        self._verse_display.setStyleSheet(
-            f"color: {COLOR_TEXT_MUTED}; font-family: '{FONT_FAMILY}';"
-            f"font-size: {FONT_SIZE_NORMAL}pt; background: transparent;"
-        )
-        self._verse_display.hide()
-        outer.addWidget(self._verse_display)
-
         # ── Divider ──────────────────────────────────────────────────
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -336,7 +283,6 @@ class VerseMemoryWidget(QWidget):
     # -- helpers -----------------------------------------------------------
 
     def _refresh_verse_display(self) -> None:
-        self._title_lbl.setText(self._verse_title)
         self._ref_lbl.setText(self._verse_ref)
 
     def _reset_practice_area(self) -> None:
@@ -455,7 +401,7 @@ class VerseMemoryWidget(QWidget):
         result.append(self._verse_text[last_end:])
 
         html = (
-            f"<p style=\"font-family:'{FONT_FAMILY}'; font-size:{FONT_SIZE_NORMAL}pt;"
+            f"<p style=\"font-family:'Georgia'; font-size:{FONT_SIZE_LARGE}pt;"
             f" font-style:italic; color:{COLOR_TEXT_MUTED};\">"
             + "".join(result)
             + "</p>"

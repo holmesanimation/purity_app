@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QPoint, QRect
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
+    QLineEdit, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from ui.intervention.base_popup import BasePopup
@@ -348,14 +348,18 @@ class WebPopup(BasePopup):
                 pass
 
         if reminder is not None:
-            self._verse_title = reminder.get("title", "")
-            self._verse_note  = reminder.get("note", "")
-            self._verse_ref   = reminder.get("verse_ref", "")
-            self._verse_text  = reminder.get("verse_text", "")
+            self._verse_title    = reminder.get("title", "")
+            self._verse_note     = reminder.get("note", "")
+            self._verse_ref      = reminder.get("verse_ref", "")
+            self._verse_text     = reminder.get("verse_text", "")
+            self._verse_question = reminder.get("question", "")
+            self._verse_keyword  = reminder.get("keyword", "")
         else:
             key = reason_id if reason_id in _WEB_VERSES else random.choice(list(_WEB_VERSES.keys()))
             self._verse_title, self._verse_ref, self._verse_text = _WEB_VERSES[key]
-            self._verse_note = ""
+            self._verse_note     = ""
+            self._verse_question = ""
+            self._verse_keyword  = ""
 
         # public so callers (e.g. MainWindow) can read it after accept()
         self.verse_title: str = self._verse_title
@@ -398,13 +402,61 @@ class WebPopup(BasePopup):
         frame_layout.setContentsMargins(14, 12, 14, 12)
         frame_layout.setSpacing(4)
 
-        title_lbl = QLabel(self._verse_title)
-        title_lbl.setWordWrap(True)
-        title_lbl.setStyleSheet(
-            f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_TITLE}pt;"
-            f"font-weight: 700; color: {COLOR_TEXT}; background: transparent; border: none;"
-        )
-        frame_layout.addWidget(title_lbl)
+        # ── Title (with optional keyword blank) ───────────────────────
+        kw = self._verse_keyword
+        if kw:
+            import re as _re
+            parts = _re.split(_re.escape(kw), self._verse_title, maxsplit=1, flags=_re.IGNORECASE)
+            title_row = QWidget()
+            title_row.setStyleSheet("background: transparent;")
+            title_hl = QHBoxLayout(title_row)
+            title_hl.setContentsMargins(0, 0, 0, 0)
+            title_hl.setSpacing(4)
+            _title_style = (
+                f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_TITLE}pt;"
+                f"font-weight: 700; color: {COLOR_TEXT}; background: transparent; border: none;"
+            )
+            if parts[0]:
+                lbl_before = QLabel(parts[0])
+                lbl_before.setStyleSheet(_title_style)
+                title_hl.addWidget(lbl_before)
+            self._keyword_input = QLineEdit()
+            from PySide6.QtGui import QFont, QFontMetrics
+            _kw_font = QFont(FONT_FAMILY, _FS_REMINDER_TITLE)
+            _kw_font.setWeight(QFont.Weight.Bold)
+            _kw_fm = QFontMetrics(_kw_font)
+            _kw_text_px = _kw_fm.horizontalAdvance(kw)
+            self._keyword_input.setFixedWidth(_kw_text_px + 24)  # 12px padding each side
+            self._keyword_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._keyword_input.setStyleSheet(
+                f"QLineEdit {{"
+                f"  background: transparent;"
+                f"  border: none;"
+                f"  border-bottom: 2px solid {COLOR_ACCENT_DARK};"
+                f"  color: {COLOR_ACCENT_DARK};"
+                f"  font-family: '{FONT_FAMILY}';"
+                f"  font-size: {_FS_REMINDER_TITLE}pt;"
+                f"  font-weight: 700;"
+                f"  padding: 0px 2px;"
+                f"}}"
+            )
+            self._keyword_input.textChanged.connect(self._on_keyword_typed)
+            title_hl.addWidget(self._keyword_input)
+            if len(parts) > 1 and parts[1]:
+                lbl_after = QLabel(parts[1])
+                lbl_after.setStyleSheet(_title_style)
+                title_hl.addWidget(lbl_after)
+            title_hl.addStretch()
+            frame_layout.addWidget(title_row)
+        else:
+            self._keyword_input = None
+            title_lbl = QLabel(self._verse_title)
+            title_lbl.setWordWrap(True)
+            title_lbl.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_TITLE}pt;"
+                f"font-weight: 700; color: {COLOR_TEXT}; background: transparent; border: none;"
+            )
+            frame_layout.addWidget(title_lbl)
 
         if self._verse_note:
             note_lbl = QLabel(self._verse_note)
@@ -430,46 +482,15 @@ class WebPopup(BasePopup):
         self.body_layout.addWidget(frame)
 
     def _add_feelings_section(self) -> None:
-        self._feeling_btn = QPushButton("How are you feeling?")
-        self._feeling_btn.setMinimumHeight(46)
-        self._feeling_btn.setStyleSheet(_BTN_SECTION)
-        self._feeling_btn.clicked.connect(self._reveal_feelings)
-        self.body_layout.addWidget(self._feeling_btn)
-
-        # Container revealed when the button is clicked
-        self._feelings_widget = QWidget()
-        self._feelings_widget.setStyleSheet("background: transparent;")
-        vbox = QVBoxLayout(self._feelings_widget)
+        # Wrap all form content so it can be hidden until the keyword is typed.
+        self._session_form_widget = QWidget()
+        self._session_form_widget.setStyleSheet("background: transparent;")
+        vbox = QVBoxLayout(self._session_form_widget)
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(10)
 
-        # ── 2-column feelings grid ────────────────────────────────────
-        grid_widget = QWidget()
-        grid_widget.setStyleSheet("background: transparent;")
-        grid = QGridLayout(grid_widget)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(8)
-
-        for row_idx, (left_entry, right_entry) in enumerate(
-            zip(_FEELINGS_LEFT, _FEELINGS_RIGHT)
-        ):
-            for col_idx, (feeling_id, feeling_label) in enumerate((left_entry, right_entry)):
-                btn = QPushButton(feeling_label)
-                btn.setMinimumHeight(38)
-                btn.setStyleSheet(_BTN_FEELING_IDLE)
-                btn.clicked.connect(
-                    lambda _checked, fid=feeling_id, lbl=feeling_label, b=btn:
-                        self._toggle_feeling(fid, lbl, b)
-                )
-                grid.addWidget(btn, row_idx, col_idx)
-                self._feeling_btns[feeling_id] = btn
-                self._active[feeling_id] = {"btn": btn, "slot": None, "card": None}
-
-        vbox.addWidget(grid_widget)
-
-        # ── Why are you on the internet? ──────────────────────────────
-        purpose_title = QLabel("Why are you on the internet?")
+        # ── What are you doing on the computer right now? ─────────────
+        purpose_title = QLabel("What are you doing on the computer right now?")
         purpose_title.setStyleSheet(
             f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
             f"font-size: {FONT_SIZE_MEDIUM}pt; font-weight: 700; background: transparent;"
@@ -477,13 +498,41 @@ class WebPopup(BasePopup):
         vbox.addWidget(purpose_title)
 
         self._reason_edit = QTextEdit()
-        self._reason_edit.setPlaceholderText(
-            "Write a sentence explaining why you are going on the internet\u2026"
-        )
+        self._reason_edit.setPlaceholderText("Use more than 3 words\u2026")
         self._reason_edit.setFixedHeight(52)
         self._reason_edit.setStyleSheet(_TEXT_EDIT_STYLE)
         self._reason_edit.textChanged.connect(self._sync_commit_enabled)
         vbox.addWidget(self._reason_edit)
+
+        # ── Why are you going on the internet? ────────────────────────
+        internet_title = QLabel("Why are you going on the internet?")
+        internet_title.setStyleSheet(
+            f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
+            f"font-size: {FONT_SIZE_MEDIUM}pt; font-weight: 700; background: transparent;"
+        )
+        vbox.addWidget(internet_title)
+
+        self._selected_internet_reason: str = ""
+        self._internet_reason_btns: dict[str, tuple] = {}
+        internet_row = QHBoxLayout()
+        internet_row.setContentsMargins(0, 0, 0, 0)
+        internet_row.setSpacing(8)
+        for reason_id, label, base_color, dark_color, faded_color in [
+            ("work",       "Work",       "#2d7a4f", "#1e5235", "#c8d9cc"),
+            ("comfort",    "Comfort",    "#c06a00", "#7a4300", "#dfd0bc"),
+            ("temptation", "Temptation", "#b03020", "#7a1e12", "#ddc8c5"),
+        ]:
+            btn = QPushButton(label)
+            btn.setMinimumHeight(38)
+            btn.setStyleSheet(self._internet_reason_btn_style(base_color, dark_color, faded_color, selected=False))
+            btn.clicked.connect(
+                lambda _checked, rid=reason_id, bc=base_color, dc=dark_color, fc=faded_color, b=btn:
+                    self._select_internet_reason(rid, bc, dc, fc, b)
+            )
+            internet_row.addWidget(btn)
+            self._internet_reason_btns[reason_id] = (btn, base_color, dark_color, faded_color)
+        internet_row.addStretch()
+        vbox.addLayout(internet_row)
 
         # ── Session length ────────────────────────────────────────────
         time_title = QLabel("How long is this internet session?")
@@ -497,6 +546,27 @@ class WebPopup(BasePopup):
         time_row.setContentsMargins(0, 0, 0, 0)
         time_row.setSpacing(8)
         self._time_combo = QComboBox()
+        _combo_popup_style = (
+            f"QComboBox {{"
+            f"  background-color: {COLOR_SURFACE};"
+            f"  border: 1px solid {COLOR_BORDER};"
+            f"  border-radius: 6px;"
+            f"  color: {COLOR_TEXT};"
+            f"  padding: 5px 9px;"
+            f"  font-family: '{FONT_FAMILY}';"
+            f"  font-size: {FONT_SIZE_NORMAL}pt;"
+            f"}}"
+            f"QComboBox::drop-down {{ border: none; width: 20px; }}"
+            f"QComboBox QAbstractItemView {{"
+            f"  background-color: {COLOR_SURFACE};"
+            f"  border: 1px solid {COLOR_BORDER};"
+            f"  color: {COLOR_TEXT};"
+            f"  selection-background-color: {COLOR_SURFACE_3};"
+            f"  selection-color: {COLOR_TEXT};"
+            f"  outline: none;"
+            f"}}"
+        )
+        self._time_combo.setStyleSheet(_combo_popup_style)
         for label, seconds in _TIME_OPTIONS:
             self._time_combo.addItem(label, seconds)
         time_row.addWidget(self._time_combo)
@@ -511,8 +581,9 @@ class WebPopup(BasePopup):
         self._commit_btn.clicked.connect(self._on_commit)
         vbox.addWidget(self._commit_btn)
 
-        self._feelings_widget.hide()
-        self.body_layout.addWidget(self._feelings_widget)
+        self.body_layout.addWidget(self._session_form_widget)
+        if self._verse_keyword:
+            self._session_form_widget.hide()
 
     # ------------------------------------------------------------------
     # Blocked layout
@@ -547,6 +618,42 @@ class WebPopup(BasePopup):
     # ------------------------------------------------------------------
     # Style helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _internet_reason_btn_style(base_color: str, dark_color: str, faded_color: str, *, selected: bool) -> str:
+        if selected:
+            return (
+                f"QPushButton {{"
+                f"  background-color: {base_color};"
+                f"  border: 2px solid #ffffff;"
+                f"  border-radius: 8px;"
+                f"  color: #ffffff;"
+                f"  font-family: '{FONT_FAMILY}';"
+                f"  font-size: {FONT_SIZE_NORMAL}pt;"
+                f"  font-weight: 700;"
+                f"  padding: 8px 20px;"
+                f"}}"
+                f"QPushButton:hover {{ background-color: {dark_color}; }}"
+            )
+        return (
+            f"QPushButton {{"
+            f"  background-color: {faded_color};"
+            f"  border: 1px solid {base_color};"
+            f"  border-radius: 8px;"
+            f"  color: {dark_color};"
+            f"  font-family: '{FONT_FAMILY}';"
+            f"  font-size: {FONT_SIZE_NORMAL}pt;"
+            f"  font-weight: 600;"
+            f"  padding: 8px 20px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: {base_color}; color: #ffffff; }}"
+        )
+
+    def _select_internet_reason(self, reason_id: str, base_color: str, dark_color: str, faded_color: str, btn: QPushButton) -> None:
+        self._selected_internet_reason = reason_id
+        for rid, (b, bc, dc, fc) in self._internet_reason_btns.items():
+            b.setStyleSheet(self._internet_reason_btn_style(bc, dc, fc, selected=(rid == reason_id)))
+        self._sync_commit_enabled()
 
     @staticmethod
     def _commit_btn_style(*, enabled: bool) -> str:
@@ -586,6 +693,9 @@ class WebPopup(BasePopup):
             self._overlay = _ScreenDimOverlay()
             self._overlay.show()
         self.raise_()
+        self.activateWindow()
+        if getattr(self, "_keyword_input", None) is not None:
+            self._keyword_input.setFocus()
         super().showEvent(event)
 
     def done(self, result: int) -> None:
@@ -598,6 +708,11 @@ class WebPopup(BasePopup):
     # ------------------------------------------------------------------
     # Feelings panel reveal
     # ------------------------------------------------------------------
+
+    def _on_keyword_typed(self, text: str) -> None:
+        if text.strip().lower() == self._verse_keyword.lower():
+            self._session_form_widget.show()
+            self.adjustSize()
 
     def _reveal_feelings(self) -> None:
         self._feeling_btn.hide()
@@ -680,7 +795,10 @@ class WebPopup(BasePopup):
         return _compute_slots(self.geometry())[slot % _SLOT_COUNT]
 
     def _sync_commit_enabled(self) -> None:
-        enabled = _is_proper_sentence(self._reason_edit.toPlainText())
+        enabled = (
+            _is_proper_sentence(self._reason_edit.toPlainText())
+            and bool(self._selected_internet_reason)
+        )
         self._commit_btn.setEnabled(enabled)
         self._commit_btn.setStyleSheet(self._commit_btn_style(enabled=enabled))
 
@@ -693,6 +811,12 @@ class WebPopup(BasePopup):
         self.allowed_urls = []
         self.reason_text = self._reason_edit.toPlainText().strip()
         self.selected_choice = "internet_session"
-        self.selected_feelings = _ordered_feelings(self._selected_feelings)
+        self.selected_feelings = []
+        if self._verse_question:
+            from ui.intervention.encouragement_question_dialog import EncouragementQuestionDialog
+            from PySide6.QtWidgets import QDialog
+            dlg = EncouragementQuestionDialog(question=self._verse_question, parent=self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
         self.accept()
 

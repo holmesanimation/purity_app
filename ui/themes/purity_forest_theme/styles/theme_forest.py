@@ -54,16 +54,10 @@ QWidget {{
 
 QMainWindow {{
     background-color: {COLOR_BACKGROUND};
-    background-image: url("{ASSET_FOREST_MOUNTAIN_LIGHT}");
-    background-position: bottom center;
-    background-repeat: no-repeat;
 }}
 
 QWidget[class="windowBackground"] {{
     background-color: {COLOR_BACKGROUND};
-    background-image: url("{ASSET_FOREST_MOUNTAIN_LIGHT}");
-    background-position: bottom center;
-    background-repeat: no-repeat;
 }}
 
 QWidget[class="transparent"],
@@ -354,5 +348,37 @@ QToolTip {{
     border: 1px solid {COLOR_ACCENT_LIGHT};
     border-radius: 6px;
     padding: 6px;
+}}
+
+/* ── Combo boxes ── */
+QComboBox {{
+    background-color: {COLOR_SURFACE};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 6px;
+    color: {COLOR_TEXT};
+    padding: 5px 9px;
+    font-family: "{FONT_FAMILY}";
+    font-size: {FONT_SIZE_NORMAL}pt;
+}}
+QComboBox:hover {{
+    border-color: {COLOR_ACCENT};
+}}
+QComboBox:focus {{
+    border-color: {COLOR_ACCENT};
+    background-color: #FAFBF7;
+}}
+QComboBox::drop-down {{
+    border: none;
+    width: 20px;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {COLOR_SURFACE};
+    border: 1px solid {COLOR_BORDER};
+    border-radius: 6px;
+    color: {COLOR_TEXT};
+    selection-background-color: {COLOR_SURFACE_3};
+    selection-color: {COLOR_TEXT};
+    outline: none;
+    padding: 2px;
 }}
 """

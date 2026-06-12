@@ -34,6 +34,7 @@ from shane_common.notes.notes_writer import NoteType
 from shane_common.ui.preferences.preferences_dialog import PreferencesDialog
 from shane_common.watchdog.heartbeat_reader import HeartbeatReader
 from services.browser_session import BrowserSessionManager, ExtensionHeartbeatMonitor
+from services.browser_session_watcher import BrowserSessionWatcher
 from services.mock_state import MockAppState
 from services.notes_setup import make_notes_writer, notes_writer, notes_repo
 from services.panic_session import PanicSession, PanicSessionOutcome, PanicSessionState
@@ -107,6 +108,7 @@ _CHROME_PATHS = [
 ]
 
 _EXTENSION_HEARTBEAT_GRACE_SECONDS = 0.0
+_UI_TIMER_LAG_THRESHOLD_MS = 50.0
 
 # ---------------------------------------------------------------------------
 # Supervisor watchdog constants
@@ -199,6 +201,7 @@ class MainWindow(QMainWindow):
         self._runtime = runtime
         self._settings_manager = settings_manager
         self._browser_session_manager = browser_session_manager
+        self._browser_session_watcher: BrowserSessionWatcher | None = None
         self._extension_heartbeat_monitor = extension_heartbeat_monitor
         self._permitted_browsers = frozenset({"chrome.exe"})
         self._kill_browsers_on_startup_enabled = True
@@ -213,6 +216,7 @@ class MainWindow(QMainWindow):
         self._panic_elevated: bool = False
         self._panic_last_override_count: int = 0
         self._panic_reminders = None  # initialised lazily on first use
+        self._bible_library = None     # initialised lazily on first use
         self._encouragement_editor_win = None  # lazy; opened via Tools menu
         self._active_panic_session: PanicSession | None = None
         self._active_panic_window: QWidget | None = None
@@ -244,8 +248,13 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         self._build_ui()
 
+        # Eagerly initialize BibleLibrary so the left-dock dashboard can source memorizing verses.
+        if self._bible_library is None and self._runtime is not None:
+            from services.bible_library import BibleLibrary
+            self._bible_library = BibleLibrary(self._runtime.data_root)
+
         # Left-edge sliding dashboard — kept as a top-level tool window.
-        self._left_dock = LeftDockDashboard()
+        self._left_dock = LeftDockDashboard(bible_library=self._bible_library)
         self._left_dock.show()
 
         # Web session timer pill — hidden until a session is approved.
@@ -260,17 +269,19 @@ class MainWindow(QMainWindow):
 
         self._web_watcher = WebWatcherService(parent=self)
         self._web_watcher.web_opened.connect(self._on_web_opened)  # type: ignore[arg-type]
+        self._web_watcher.browser_running_changed.connect(self._on_browser_running_changed)
         self._kill_browsers_on_startup()
         self._web_watcher.start()
 
-        # Poll every 5 s to hide the pill when the watched browser has been closed.
-        self._browser_poll_timer = QTimer(self)
-        self._browser_poll_timer.timeout.connect(self._poll_browser_running)
-        self._browser_poll_timer.start(5_000)
-
-        self._extension_health_timer = QTimer(self)
-        self._extension_health_timer.timeout.connect(self._enforce_extension_heartbeat)
-        self._extension_health_timer.start(2_000)
+        if self._browser_session_manager is not None or self._extension_heartbeat_monitor is not None:
+            self._browser_session_watcher = BrowserSessionWatcher(
+                session_manager=self._browser_session_manager,
+                heartbeat_monitor=self._extension_heartbeat_monitor,
+                parent=self,
+            )
+            self._browser_session_watcher.session_payload_changed.connect(self._poll_panic_elevation)
+            self._browser_session_watcher.heartbeat_healthy_changed.connect(self._enforce_extension_heartbeat)
+            self._browser_session_watcher.start()
 
         # 60-second heartbeat tick: note_clock + system.alive journal event
         if self._runtime is not None:
@@ -285,10 +296,6 @@ class MainWindow(QMainWindow):
             self._app_control_request_timer = QTimer(self)
             self._app_control_request_timer.timeout.connect(self._process_app_control_requests)
             self._app_control_request_timer.start(500)
-
-            self._panic_elevation_timer = QTimer(self)
-            self._panic_elevation_timer.timeout.connect(self._poll_panic_elevation)
-            self._panic_elevation_timer.start(500)
 
             if self._settings_manager is not None:
                 self._pulse_manager = PulseManager(
@@ -340,6 +347,17 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(root)
 
+    def _log_ui_timer_duration(self, callback_name: str, started_at: float) -> None:
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        if elapsed_ms < _UI_TIMER_LAG_THRESHOLD_MS:
+            return
+        if self._runtime is None:
+            return
+        _append_startup_log(
+            self._runtime.data_root,
+            f"UI timer callback slow: {callback_name} took {elapsed_ms:.1f} ms",
+        )
+
     def _build_menu_bar(self) -> None:
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
@@ -360,6 +378,11 @@ class MainWindow(QMainWindow):
         edit_encouragements_action.triggered.connect(self._open_encouragement_editor)
         tools_menu.addAction(edit_encouragements_action)
 
+        bible_browser_action = QAction("Bible Browser", self)
+        bible_browser_action.setEnabled(self._runtime is not None)
+        bible_browser_action.triggered.connect(self._open_bible_browser)
+        tools_menu.addAction(bible_browser_action)
+
         launch_pulse_action = QAction("Launch Pulse", self)
         launch_pulse_action.triggered.connect(self._launch_manual_pulse)
         tools_menu.addAction(launch_pulse_action)
@@ -374,18 +397,26 @@ class MainWindow(QMainWindow):
         honor_dialog_action.triggered.connect(self._debug_web_session_honor_dialog)
         debug_menu.addAction(honor_dialog_action)
 
+        open_logs_folder_action = QAction("Open Logs Folder", self)
+        open_logs_folder_action.setEnabled(self._runtime is not None)
+        open_logs_folder_action.triggered.connect(self._open_logs_folder)
+        debug_menu.addAction(open_logs_folder_action)
+
     def _open_encouragement_editor(self) -> None:
+        from services.bible_library import BibleLibrary
         from services.panic_reminders import PanicReminders
         from ui.tools.encouragement_editor_dialog import EncouragementEditorDialog
 
         if self._panic_reminders is None and self._runtime is not None:
             self._panic_reminders = PanicReminders(self._runtime.data_root)
-        if self._panic_reminders is None:
+        if self._bible_library is None and self._runtime is not None:
+            self._bible_library = BibleLibrary(self._runtime.data_root)
+        if self._panic_reminders is None or self._bible_library is None:
             return
 
         if self._encouragement_editor_win is None:
             self._encouragement_editor_win = EncouragementEditorDialog(
-                self._panic_reminders, parent=self
+                self._panic_reminders, self._bible_library, parent=None
             )
             # Clear the reference when the window is closed so it can be
             # garbage-collected and a fresh instance is created on next open.
@@ -396,6 +427,30 @@ class MainWindow(QMainWindow):
         self._encouragement_editor_win.show()
         self._encouragement_editor_win.raise_()
         self._encouragement_editor_win.activateWindow()
+
+    def _open_bible_browser(self) -> None:
+        from services.bible_library import BibleLibrary
+        from ui.tools.bible_browser_dialog import BibleBrowserDialog
+
+        if self._bible_library is None and self._runtime is not None:
+            self._bible_library = BibleLibrary(self._runtime.data_root)
+        if self._bible_library is None:
+            return
+
+        dlg = BibleBrowserDialog(
+            bible_library=self._bible_library,
+            select_mode=False,
+            parent=None,
+        )
+        dlg.exec()
+
+    def _open_logs_folder(self) -> None:
+        import subprocess
+        if self._runtime is None:
+            return
+        logs_path = self._runtime.data_root / "_system" / "purity"
+        logs_path.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(["explorer", str(logs_path)])
 
     def _debug_expire_web_session(self) -> None:
         self._web_timer_pill.stop_session()
@@ -558,6 +613,10 @@ class MainWindow(QMainWindow):
         honor_debug_btn.clicked.connect(self._debug_web_session_honor_dialog)
         vbox.addWidget(honor_debug_btn)
 
+        bible_browser_btn = QPushButton("📖 Bible Browser")
+        bible_browser_btn.clicked.connect(self._open_bible_browser)
+        vbox.addWidget(bible_browser_btn)
+
         vbox.addStretch()
         return sidebar  # type: ignore[return-value]
 
@@ -649,41 +708,47 @@ class MainWindow(QMainWindow):
                     reason=reason_text,
                 )
 
-    def _poll_panic_elevation(self) -> None:
+    def _poll_panic_elevation(self, payload: dict | None = None) -> None:
         """Poll the active browser session for override-counter changes.
 
         When the override_count increases the danger state is elevated and
         panic.danger_elevated is emitted.  When the session clears while still
         elevated, panic.danger_cleared is emitted and the flag is reset.
         """
-        if self._browser_session_manager is None:
+        started_at = time.perf_counter()
+        if payload is None and self._browser_session_manager is None:
+            self._log_ui_timer_duration("_poll_panic_elevation", started_at)
             return
 
-        payload = self._browser_session_manager.get_session_payload()
-        session_active = bool(payload.get("is_active"))
-        override_count = int(payload.get("override_count") or 0)
+        try:
+            if payload is None:
+                payload = self._browser_session_manager.get_session_payload()
+            session_active = bool(payload.get("is_active"))
+            override_count = int(payload.get("override_count") or 0)
 
-        if session_active and override_count > self._panic_last_override_count:
-            self._panic_last_override_count = override_count
-            self._panic_elevated = True
-            if self._runtime is not None:
-                from services.journal_events import emit_panic_danger_elevated
-                emit_panic_danger_elevated(
-                    self._runtime.journal,
-                    panic_session_id="none",
-                    override_url=str(payload.get("last_override_url") or ""),
-                )
-        elif not session_active and self._panic_elevated:
-            self._panic_elevated = False
-            self._panic_last_override_count = 0
-            if self._runtime is not None:
-                from services.journal_events import emit_panic_danger_cleared
-                emit_panic_danger_cleared(
-                    self._runtime.journal,
-                    panic_session_id="none",
-                )
+            if session_active and override_count > self._panic_last_override_count:
+                self._panic_last_override_count = override_count
+                self._panic_elevated = True
+                if self._runtime is not None:
+                    from services.journal_events import emit_panic_danger_elevated
+                    emit_panic_danger_elevated(
+                        self._runtime.journal,
+                        panic_session_id="none",
+                        override_url=str(payload.get("last_override_url") or ""),
+                    )
+            elif not session_active and self._panic_elevated:
+                self._panic_elevated = False
+                self._panic_last_override_count = 0
+                if self._runtime is not None:
+                    from services.journal_events import emit_panic_danger_cleared
+                    emit_panic_danger_cleared(
+                        self._runtime.journal,
+                        panic_session_id="none",
+                    )
 
-        self._panic_btn.set_elevated(self._panic_elevated)
+            self._panic_btn.set_elevated(self._panic_elevated)
+        finally:
+            self._log_ui_timer_duration("_poll_panic_elevation", started_at)
 
     def _start_panic_intervention(self) -> None:
         """Immediate browser-kill + session-clear; open the reason dialog.
@@ -740,13 +805,19 @@ class MainWindow(QMainWindow):
         if self._panic_reminders is None and self._runtime is not None:
             from services.panic_reminders import PanicReminders
             self._panic_reminders = PanicReminders(self._runtime.data_root)
+        if self._bible_library is None and self._runtime is not None:
+            from services.bible_library import BibleLibrary
+            self._bible_library = BibleLibrary(self._runtime.data_root)
         reminder = (
             self._panic_reminders.get_random()
             if self._panic_reminders is not None
             else None
         )
 
-        reason_dialog = PanicReasonDialog(stats=stats, reminder=reminder, parent=None)
+        reason_dialog = PanicReasonDialog(
+            stats=stats, reminder=reminder,
+            bible_library=self._bible_library, parent=None
+        )
         if reason_dialog.exec() != QDialog.DialogCode.Accepted:
             # User closed the reason dialog without selecting — record abandoned.
             from services.journal_events import emit_panic_closed
@@ -792,44 +863,49 @@ class MainWindow(QMainWindow):
         intervention_window.show()
 
     def _process_web_launch_requests(self) -> None:
+        started_at = time.perf_counter()
         if self._runtime is None:
+            self._log_ui_timer_duration("_process_web_launch_requests", started_at)
             return
 
         try:
-            pending = read_pending_web_launch_requests(self._runtime.data_root)
-        except Exception as exc:
-            append_web_request_log(
-                self._runtime.data_root,
-                "app.poll_failed",
-                "Running app failed while reading web launch requests.",
-                level="ERROR",
-                exc=exc,
-            )
-            return
-
-        for path, request in pending:
             try:
-                mark_web_launch_request_done(path)
-                args = request.get("args") if isinstance(request, dict) else []
-                if not isinstance(args, list):
-                    append_web_request_log(
-                        self._runtime.data_root,
-                        "app.request_args_invalid",
-                        "Web launch request args were not a list.",
-                        level="ERROR",
-                        details={"path": str(path), "args_type": type(args).__name__},
-                    )
-                    args = []
-                self._handle_web_launch_request([str(arg) for arg in args])
+                pending = read_pending_web_launch_requests(self._runtime.data_root)
             except Exception as exc:
                 append_web_request_log(
                     self._runtime.data_root,
-                    "app.request_failed",
-                    "Running app failed while processing web launch request.",
+                    "app.poll_failed",
+                    "Running app failed while reading web launch requests.",
                     level="ERROR",
-                    details={"path": str(path), "request": request},
                     exc=exc,
                 )
+                return
+
+            for path, request in pending:
+                try:
+                    mark_web_launch_request_done(path)
+                    args = request.get("args") if isinstance(request, dict) else []
+                    if not isinstance(args, list):
+                        append_web_request_log(
+                            self._runtime.data_root,
+                            "app.request_args_invalid",
+                            "Web launch request args were not a list.",
+                            level="ERROR",
+                            details={"path": str(path), "args_type": type(args).__name__},
+                        )
+                        args = []
+                    self._handle_web_launch_request([str(arg) for arg in args])
+                except Exception as exc:
+                    append_web_request_log(
+                        self._runtime.data_root,
+                        "app.request_failed",
+                        "Running app failed while processing web launch request.",
+                        level="ERROR",
+                        details={"path": str(path), "request": request},
+                        exc=exc,
+                    )
+        finally:
+            self._log_ui_timer_duration("_process_web_launch_requests", started_at)
 
     def _handle_web_launch_request(self, args: list[str]) -> None:
         from services.journal_events import emit_chrome_decision
@@ -967,11 +1043,6 @@ class MainWindow(QMainWindow):
         if not self._web_timer_pill.is_warning_active:
             self._web_timer_pill.start_extension_warning(30)
 
-    def _extension_heartbeat_is_healthy(self) -> bool:
-        if self._extension_heartbeat_monitor is None:
-            return True
-        return self._extension_heartbeat_monitor.is_healthy()
-
     def _extension_heartbeat_grace_active(self) -> bool:
         deadline = self._web_session_heartbeat_grace_deadline
         return deadline is not None and time.monotonic() < deadline
@@ -1006,16 +1077,23 @@ class MainWindow(QMainWindow):
             log_event="extension_heartbeat.warning_expired",
         )
 
-    def _enforce_extension_heartbeat(self) -> None:
+    def _enforce_extension_heartbeat(self, is_healthy: bool | None = None) -> None:
+        started_at = time.perf_counter()
         if not self._web_timer_pill.isVisible():
+            self._log_ui_timer_duration("_enforce_extension_heartbeat", started_at)
             return
-        healthy = self._extension_heartbeat_is_healthy() or self._extension_heartbeat_grace_active()
-        if healthy:
-            if self._web_timer_pill.is_warning_active:
-                self._web_timer_pill.clear_extension_warning()
-            return
-        if not self._web_timer_pill.is_warning_active:
-            self._web_timer_pill.start_extension_warning(30)
+        try:
+            if is_healthy is None:
+                is_healthy = self._extension_heartbeat_monitor is None or self._extension_heartbeat_monitor.is_healthy()
+            healthy = bool(is_healthy) or self._extension_heartbeat_grace_active()
+            if healthy:
+                if self._web_timer_pill.is_warning_active:
+                    self._web_timer_pill.clear_extension_warning()
+                return
+            if not self._web_timer_pill.is_warning_active:
+                self._web_timer_pill.start_extension_warning(30)
+        finally:
+            self._log_ui_timer_duration("_enforce_extension_heartbeat", started_at)
 
     def _start_web_timer(self, timeout: int | None = None) -> None:
         """Read the configured timeout and (re)start the session pill."""
@@ -1059,21 +1137,17 @@ class MainWindow(QMainWindow):
             if reason:
                 self._show_web_session_honor_dialog(reason)
 
-    def _poll_browser_running(self) -> None:
-        """Hide the pill if no watched browser processes are running."""
+    def _on_browser_running_changed(self, is_running: bool) -> None:
+        """React to worker-thread browser state updates without UI-thread polling."""
         if not self._web_timer_pill.isVisible():
             return
-        from shane_common.processes.windows import list_process_pids
-        from services.web_watcher import _WATCHED_BROWSERS
-        any_running = any(
-            list_process_pids(exe) for exe in _WATCHED_BROWSERS
-        )
-        if not any_running:
-            reason = self._web_session_reason
-            self._web_timer_pill.stop_session()
-            self._clear_browser_session_state()
-            if reason:
-                self._show_web_session_honor_dialog(reason)
+        if is_running:
+            return
+        reason = self._web_session_reason
+        self._web_timer_pill.stop_session()
+        self._clear_browser_session_state()
+        if reason:
+            self._show_web_session_honor_dialog(reason)
 
     def _show_web_session_honor_dialog(self, reason: str) -> None:
         """Show the post-session accountability dialog."""
@@ -1104,12 +1178,17 @@ class MainWindow(QMainWindow):
         NoteDialog(writer=notes_writer, owner="purity", parent=self).exec()
 
     def _poll_pulse_due(self) -> None:
+        started_at = time.perf_counter()
         if self._pulse_manager is None:
+            self._log_ui_timer_duration("_poll_pulse_due", started_at)
             return
-        pending = self._pulse_manager.poll_due_pulse()
-        if pending is None:
-            return
-        self._open_pulse_dialog(pending)
+        try:
+            pending = self._pulse_manager.poll_due_pulse()
+            if pending is None:
+                return
+            self._open_pulse_dialog(pending)
+        finally:
+            self._log_ui_timer_duration("_poll_pulse_due", started_at)
 
     def _launch_manual_pulse(self) -> None:
         if self._pulse_manager is None:
@@ -1261,50 +1340,55 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _process_app_control_requests(self) -> None:
+        started_at = time.perf_counter()
         if self._runtime is None:
+            self._log_ui_timer_duration("_process_app_control_requests", started_at)
             return
 
         try:
-            pending = read_pending_app_control_requests(self._runtime.data_root)
-        except Exception as exc:
-            append_web_request_log(
-                self._runtime.data_root,
-                "app_control.poll_failed",
-                "Running app failed while reading app control requests.",
-                level="ERROR",
-                exc=exc,
-            )
-            return
-
-        for path, request in pending:
             try:
-                mark_app_control_request_done(path)
-                action = str(request.get("action") or "") if isinstance(request, dict) else ""
-                if action == "show_main_window":
-                    append_web_request_log(
-                        self._runtime.data_root,
-                        "app_control.show_main_window",
-                        "Running app is raising the main window for a duplicate launch.",
-                        details={"path": str(path), "request": request},
-                    )
-                    self.show_and_raise()
-                else:
-                    append_web_request_log(
-                        self._runtime.data_root,
-                        "app_control.unknown_action",
-                        "Running app ignored unknown app control request.",
-                        level="WARN",
-                        details={"path": str(path), "request": request},
-                    )
+                pending = read_pending_app_control_requests(self._runtime.data_root)
             except Exception as exc:
                 append_web_request_log(
                     self._runtime.data_root,
-                    "app_control.request_failed",
-                    "Running app failed while processing app control request.",
+                    "app_control.poll_failed",
+                    "Running app failed while reading app control requests.",
                     level="ERROR",
-                    details={"path": str(path), "request": request},
                     exc=exc,
                 )
+                return
+
+            for path, request in pending:
+                try:
+                    mark_app_control_request_done(path)
+                    action = str(request.get("action") or "") if isinstance(request, dict) else ""
+                    if action == "show_main_window":
+                        append_web_request_log(
+                            self._runtime.data_root,
+                            "app_control.show_main_window",
+                            "Running app is raising the main window for a duplicate launch.",
+                            details={"path": str(path), "request": request},
+                        )
+                        self.show_and_raise()
+                    else:
+                        append_web_request_log(
+                            self._runtime.data_root,
+                            "app_control.unknown_action",
+                            "Running app ignored unknown app control request.",
+                            level="WARN",
+                            details={"path": str(path), "request": request},
+                        )
+                except Exception as exc:
+                    append_web_request_log(
+                        self._runtime.data_root,
+                        "app_control.request_failed",
+                        "Running app failed while processing app control request.",
+                        level="ERROR",
+                        details={"path": str(path), "request": request},
+                        exc=exc,
+                    )
+        finally:
+            self._log_ui_timer_duration("_process_app_control_requests", started_at)
 
     # ------------------------------------------------------------------
     # Supervisor watchdog monitoring
@@ -1312,38 +1396,43 @@ class MainWindow(QMainWindow):
 
     def _check_supervisor_heartbeat(self) -> None:
         """Periodic check — alert if the supervisor process is unresponsive."""
+        started_at = time.perf_counter()
         if self._supervisor_heartbeat_reader is None:
+            self._log_ui_timer_duration("_check_supervisor_heartbeat", started_at)
             return
         try:
-            _, mtime, exit_present = self._supervisor_heartbeat_reader.read("purity_supervisor")
+            try:
+                _, mtime, exit_present = self._supervisor_heartbeat_reader.read("purity_supervisor")
 
-            # Not yet seen a healthy heartbeat — wait for the supervisor to start.
-            # Once we've seen it healthy at least once, any subsequent absence is an alert.
-            supervisor_is_down = (
-                exit_present
-                or mtime is None
-                or self._supervisor_heartbeat_reader.is_dead(mtime)
-            )
+                # Not yet seen a healthy heartbeat — wait for the supervisor to start.
+                # Once we've seen it healthy at least once, any subsequent absence is an alert.
+                supervisor_is_down = (
+                    exit_present
+                    or mtime is None
+                    or self._supervisor_heartbeat_reader.is_dead(mtime)
+                )
 
-            if not supervisor_is_down:
-                self._supervisor_seen_healthy = True
-                self._supervisor_down_alerted = False
-                return
+                if not supervisor_is_down:
+                    self._supervisor_seen_healthy = True
+                    self._supervisor_down_alerted = False
+                    return
 
-            # Still waiting for supervisor to write its first heartbeat.
-            if not self._supervisor_seen_healthy:
-                return
+                # Still waiting for supervisor to write its first heartbeat.
+                if not self._supervisor_seen_healthy:
+                    return
 
-            if not self._supervisor_down_alerted:
-                self._supervisor_down_alerted = True
-                self._notify_supervisor_down()
-                self._show_supervisor_down_dialog()
+                if not self._supervisor_down_alerted:
+                    self._supervisor_down_alerted = True
+                    self._notify_supervisor_down()
+                    self._show_supervisor_down_dialog()
 
-        except Exception as exc:
-            _append_startup_log(
-                self._runtime.data_root,
-                f"_check_supervisor_heartbeat: unhandled exception: {exc}",
-            )
+            except Exception as exc:
+                _append_startup_log(
+                    self._runtime.data_root,
+                    f"_check_supervisor_heartbeat: unhandled exception: {exc}",
+                )
+        finally:
+            self._log_ui_timer_duration("_check_supervisor_heartbeat", started_at)
 
     def _notify_supervisor_down(self) -> None:
         """Send a Telegram notification that the supervisor is down."""
@@ -1448,6 +1537,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # type: ignore[override]
         app = QApplication.instance()
         if app is None or app.closingDown():
+            if self._browser_session_watcher is not None:
+                self._browser_session_watcher.stop()
+            self._web_watcher.stop()
             # Best-effort: record ABANDONED if a panic session is still open.
             if (
                 self._active_panic_session is not None

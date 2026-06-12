@@ -1,7 +1,7 @@
 """Panic reason selection dialog — redesigned.
 
 Layout (top to bottom):
-  1. Reminder banner  — bold title, regular note, bold verse_ref, italic verse
+  1. Reminder banner  — bold title, regular note, verse refs looked up from BibleLibrary
   2. "How are you feeling?" section header
   3. Reason buttons (2-column grid) — pressing toggles selection and
      spawns / dismisses a floating RecoveryNoteCard beside the dialog
@@ -10,7 +10,8 @@ Layout (top to bottom):
 Usage::
 
     reminder = panic_reminders.get_random()   # may be None
-    dialog = PanicReasonDialog(stats=panic_stats, reminder=reminder, parent=None)
+    dialog = PanicReasonDialog(stats=panic_stats, reminder=reminder,
+                               bible_library=bible_library, parent=None)
     if dialog.exec() == QDialog.DialogCode.Accepted:
         selected = dialog.selected_reason_ids
 """
@@ -227,6 +228,7 @@ class PanicReasonDialog(BasePopup):
         *,
         stats: Optional[object] = None,     # PanicStats | None
         reminder: Optional[dict] = None,    # Reminder | None
+        bible_library: Optional[object] = None,  # BibleLibrary | None
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__("", parent)
@@ -250,8 +252,9 @@ class PanicReasonDialog(BasePopup):
 
         self.selected_reason_ids: list[str] = []
 
-        self._stats    = stats
-        self._reminder = reminder
+        self._stats         = stats
+        self._reminder      = reminder
+        self._bible_library = bible_library
 
         # reason_id → {btn, slot, card}
         self._active: dict[str, dict] = {}
@@ -381,22 +384,30 @@ class PanicReasonDialog(BasePopup):
         )
         frame_layout.addWidget(lbl_note)
 
-        # Bold verse reference + italic verse text (rich text label)
-        verse_ref  = reminder.get("verse_ref",  "")
-        verse_text = reminder.get("verse_text", "")
-        if verse_ref or verse_text:
-            lbl_verse = QLabel(
-                f'<b>{verse_ref}</b><br>'
-                f'<i>&#8220;{verse_text}&#8221;</i>'
-            )
-            lbl_verse.setTextFormat(Qt.TextFormat.RichText)
-            lbl_verse.setWordWrap(True)
-            lbl_verse.setStyleSheet(
-                f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_VERSE}pt;"
-                f"color: {COLOR_TEXT_MUTED}; background: transparent; border: none;"
-                f"padding-top: 4px;"
-            )
-            frame_layout.addWidget(lbl_verse)
+        # Bold verse reference + italic verse text, looked up from BibleLibrary
+        verse_refs = reminder.get("verse_refs") or []
+        if verse_refs and self._bible_library is not None:
+            parts: list[str] = []
+            for ref in verse_refs:
+                ref_display = ref.get("display", "")
+                latest = self._bible_library.get_latest_version(ref.get("key", ""))
+                if latest:
+                    parts.append(
+                        f'<b>{ref_display}</b><br>'
+                        f'<i>&#8220;{latest["text"]}&#8221;</i>'
+                    )
+                elif ref_display:
+                    parts.append(f'<b>{ref_display}</b>')
+            if parts:
+                lbl_verse = QLabel("<br><br>".join(parts))
+                lbl_verse.setTextFormat(Qt.TextFormat.RichText)
+                lbl_verse.setWordWrap(True)
+                lbl_verse.setStyleSheet(
+                    f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_VERSE}pt;"
+                    f"color: {COLOR_TEXT_MUTED}; background: transparent; border: none;"
+                    f"padding-top: 4px;"
+                )
+                frame_layout.addWidget(lbl_verse)
 
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.body_layout.addWidget(frame)

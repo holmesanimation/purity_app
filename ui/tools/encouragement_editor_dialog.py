@@ -6,16 +6,18 @@ Open from the main window's Tools → Edit Encouragements menu item.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,12 +25,14 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from services.bible_library import BibleLibrary
 from services.panic_reminders import PanicReminders
 from styles.theme import (
     COLOR_ACCENT,
@@ -259,12 +263,85 @@ class _BackgroundPreviewOverlay(QWidget):
             painter.drawPixmap(x, y, pix)
 
 
+class _VerseTooltipPopup(QFrame):
+    """Frameless scrollable popup showing verse refs and their latest saved text."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(
+            parent,
+            Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setStyleSheet(
+            f"QFrame {{ background-color: {COLOR_SURFACE};"
+            f" border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
+        )
+        self.setMaximumHeight(300)
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(420)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(f"background-color: {COLOR_SURFACE};")
+        outer.addWidget(self._scroll)
+
+        self._container = QWidget()
+        self._container.setStyleSheet(f"background-color: {COLOR_SURFACE};")
+        self._container_layout = QVBoxLayout(self._container)
+        self._container_layout.setContentsMargins(10, 8, 10, 8)
+        self._container_layout.setSpacing(6)
+        self._scroll.setWidget(self._container)
+
+    def update_content(self, verse_refs: list, bible_library: BibleLibrary) -> None:
+        while self._container_layout.count():
+            item = self._container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not verse_refs:
+            lbl = QLabel("No verses selected.")
+            lbl.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_SMALL}pt;"
+                f"color: {COLOR_TEXT_MUTED}; background: transparent;"
+            )
+            self._container_layout.addWidget(lbl)
+            return
+
+        for ref in verse_refs:
+            ref_lbl = QLabel(ref.get("display", ""))
+            ref_lbl.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_SMALL}pt;"
+                f"font-weight: 700; color: {COLOR_ACCENT}; background: transparent;"
+            )
+            self._container_layout.addWidget(ref_lbl)
+
+            latest = bible_library.get_latest_version(ref.get("key", ""))
+            if latest:
+                version_lbl = QLabel(f'{latest["version"]}: {latest["text"]}')
+            else:
+                version_lbl = QLabel("(No text saved)")
+            version_lbl.setWordWrap(True)
+            version_lbl.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_SMALL}pt;"
+                f"font-style: italic; color: {COLOR_TEXT}; background: transparent;"
+            )
+            self._container_layout.addWidget(version_lbl)
+
+        self._container_layout.addStretch()
+        self.adjustSize()
+
+
 class EncouragementEditorDialog(QDialog):
     """Two-column dialog: list on the left, detail editor on the right."""
 
     def __init__(
         self,
         panic_reminders: PanicReminders,
+        bible_library: BibleLibrary,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(
@@ -279,16 +356,19 @@ class EncouragementEditorDialog(QDialog):
         self.setMinimumSize(760, 480)
 
         self._reminders = panic_reminders
+        self._bible_library = bible_library
         self._current_index: Optional[int] = None   # index in get_all(); None = new
         self._original_data: Optional[dict] = None
         self._is_dirty: bool = False
         self._is_new: bool = False           # True after Create, before first save
         self._pending_edits: dict = {}       # int → dict; unsaved edits per reminder index
+        self._selected_verse_refs: list[dict] = []
 
         # Dirty tracking: map field widget → field key
         self._field_map: dict[QWidget, str] = {}
 
         self._preview_overlay: Optional[_BackgroundPreviewOverlay] = None
+        self._verse_tooltip: Optional[_VerseTooltipPopup] = None
 
         self._build_ui()
         self._load_list()
@@ -379,6 +459,13 @@ class EncouragementEditorDialog(QDialog):
         form.addRow(_label("Title"), self._title_edit)
         self._field_map[self._title_edit] = "title"
 
+        # Key Word
+        self._keyword_combo = QComboBox()
+        self._keyword_combo.setStyleSheet(_COMBO_NORMAL_STYLE)
+        self._keyword_combo.addItem("(Select word)", userData="")
+        form.addRow(_label("Key Word"), self._keyword_combo)
+        self._field_map[self._keyword_combo] = "keyword"
+
         # Note
         self._note_edit = QTextEdit()
         self._note_edit.setPlaceholderText("Supporting personal affirmation")
@@ -388,21 +475,12 @@ class EncouragementEditorDialog(QDialog):
         form.addRow(_label("Note"), self._note_edit)
         self._field_map[self._note_edit] = "note"
 
-        # Verse Reference
-        self._verse_ref_edit = QLineEdit()
-        self._verse_ref_edit.setPlaceholderText("e.g. 1 Tim. 1:5")
-        self._verse_ref_edit.setStyleSheet(_FIELD_NORMAL)
-        form.addRow(_label("Verse Reference"), self._verse_ref_edit)
-        self._field_map[self._verse_ref_edit] = "verse_ref"
-
-        # Verse Text
-        self._verse_text_edit = QTextEdit()
-        self._verse_text_edit.setPlaceholderText("Full scripture quote")
-        self._verse_text_edit.setMinimumHeight(80)
-        self._verse_text_edit.setMaximumHeight(120)
-        self._verse_text_edit.setStyleSheet(_FIELD_NORMAL)
-        form.addRow(_label("Verse Text"), self._verse_text_edit)
-        self._field_map[self._verse_text_edit] = "verse_text"
+        # Question
+        self._question_edit = QLineEdit()
+        self._question_edit.setPlaceholderText("e.g. Are you committed to purity right now?")
+        self._question_edit.setStyleSheet(_FIELD_NORMAL)
+        form.addRow(_label("Question"), self._question_edit)
+        self._field_map[self._question_edit] = "question"
 
         # Subject
         self._subject_combo = QComboBox()
@@ -431,6 +509,26 @@ class EncouragementEditorDialog(QDialog):
         bg_fl.addWidget(self._preview_btn)
         form.addRow(_label("Background"), bg_field)
         self._field_map[self._background_combo] = "background"
+
+        # Verses
+        verses_row = QWidget()
+        verses_row.setStyleSheet("background: transparent;")
+        verses_fl = QHBoxLayout(verses_row)
+        verses_fl.setContentsMargins(0, 0, 0, 0)
+        verses_fl.setSpacing(8)
+        self._choose_verses_btn = QPushButton("Choose Verses")
+        self._choose_verses_btn.setStyleSheet(_BTN_CREATE)
+        self._choose_verses_btn.clicked.connect(self._on_choose_verses)
+        verses_fl.addWidget(self._choose_verses_btn)
+        self._verses_label = QLabel("No verses selected.")
+        self._verses_label.setWordWrap(True)
+        self._verses_label.setStyleSheet(
+            f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt;"
+            f"color: {COLOR_TEXT_MUTED}; background: transparent;"
+        )
+        self._verses_label.installEventFilter(self)
+        verses_fl.addWidget(self._verses_label, stretch=1)
+        form.addRow(_label("Verses"), verses_row)
 
         rv.addLayout(form)
         rv.addStretch()
@@ -462,21 +560,23 @@ class EncouragementEditorDialog(QDialog):
 
         # ── Connect change signals ─────────────────────────────────────
         self._title_edit.textChanged.connect(self._on_any_field_changed)
+        self._title_edit.textChanged.connect(self._on_title_changed_for_keyword)
+        self._keyword_combo.currentIndexChanged.connect(self._on_any_field_changed)
         self._note_edit.textChanged.connect(self._on_any_field_changed)
-        self._verse_ref_edit.textChanged.connect(self._on_any_field_changed)
-        self._verse_text_edit.textChanged.connect(self._on_any_field_changed)
+        self._question_edit.textChanged.connect(self._on_any_field_changed)
         self._subject_combo.currentIndexChanged.connect(self._on_any_field_changed)
         self._background_combo.currentIndexChanged.connect(self._on_background_combo_changed)
 
         # Keep track of all editable detail widgets for enable/disable toggling
         self._detail_widgets: list[QWidget] = [
             self._title_edit,
+            self._keyword_combo,
             self._note_edit,
-            self._verse_ref_edit,
-            self._verse_text_edit,
+            self._question_edit,
             self._subject_combo,
             self._background_combo,
             self._preview_btn,
+            self._choose_verses_btn,
             self._save_btn,
             self._delete_btn,
         ]
@@ -542,9 +642,16 @@ class EncouragementEditorDialog(QDialog):
         self._block_change_signals(True)
 
         self._title_edit.setText(reminder.get("title", ""))
+        self._populate_keyword_combo(reminder.get("title", ""))
+        keyword = reminder.get("keyword", "")
+        kw_idx = next(
+            (i for i in range(self._keyword_combo.count())
+             if self._keyword_combo.itemData(i) == keyword),
+            0,
+        )
+        self._keyword_combo.setCurrentIndex(kw_idx)
         self._note_edit.setPlainText(reminder.get("note", ""))
-        self._verse_ref_edit.setText(reminder.get("verse_ref", ""))
-        self._verse_text_edit.setPlainText(reminder.get("verse_text", ""))
+        self._question_edit.setText(reminder.get("question", ""))
 
         subject = reminder.get("subject", "general") or "general"
         idx = next(
@@ -562,27 +669,34 @@ class EncouragementEditorDialog(QDialog):
         )
         self._background_combo.setCurrentIndex(bg_idx)
 
+        self._selected_verse_refs = list(reminder.get("verse_refs", []) or [])
+        self._update_verses_label()
+
         self._block_change_signals(False)
 
     def _clear_fields(self) -> None:
         """Clear all form fields without triggering dirty."""
         self._block_change_signals(True)
         self._title_edit.clear()
+        self._keyword_combo.clear()
+        self._keyword_combo.addItem("(Select word)", userData="")
         self._note_edit.clear()
-        self._verse_ref_edit.clear()
-        self._verse_text_edit.clear()
+        self._question_edit.clear()
         self._subject_combo.setCurrentIndex(0)
         self._background_combo.setCurrentIndex(0)
         self._block_change_signals(False)
+        self._selected_verse_refs = []
+        self._update_verses_label()
 
     def _collect_form_data(self) -> dict:
         return {
             "title":      self._title_edit.text().strip(),
+            "keyword":    self._keyword_combo.currentData() or "",
             "note":       self._note_edit.toPlainText().strip(),
-            "verse_ref":  self._verse_ref_edit.text().strip(),
-            "verse_text": self._verse_text_edit.toPlainText().strip(),
+            "question":   self._question_edit.text().strip(),
             "subject":    self._subject_combo.currentData() or "general",
             "background": self._background_combo.currentData(),
+            "verse_refs": list(self._selected_verse_refs),
         }
 
     def _block_change_signals(self, block: bool) -> None:
@@ -622,9 +736,9 @@ class EncouragementEditorDialog(QDialog):
             self._set_list_item_color_at(self._current_index, False)
         # Reset all field borders to normal
         self._title_edit.setStyleSheet(_FIELD_NORMAL)
+        self._keyword_combo.setStyleSheet(_COMBO_NORMAL_STYLE)
         self._note_edit.setStyleSheet(_FIELD_NORMAL)
-        self._verse_ref_edit.setStyleSheet(_FIELD_NORMAL)
-        self._verse_text_edit.setStyleSheet(_FIELD_NORMAL)
+        self._question_edit.setStyleSheet(_FIELD_NORMAL)
         self._subject_combo.setStyleSheet(_COMBO_NORMAL_STYLE)
         self._background_combo.setStyleSheet(_COMBO_NORMAL_STYLE)
 
@@ -689,8 +803,7 @@ class EncouragementEditorDialog(QDialog):
             self._revert_btn.setVisible(False)
             self._title_edit.setStyleSheet(_FIELD_NORMAL)
             self._note_edit.setStyleSheet(_FIELD_NORMAL)
-            self._verse_ref_edit.setStyleSheet(_FIELD_NORMAL)
-            self._verse_text_edit.setStyleSheet(_FIELD_NORMAL)
+            self._question_edit.setStyleSheet(_FIELD_NORMAL)
             self._subject_combo.setStyleSheet(_COMBO_NORMAL_STYLE)
             self._background_combo.setStyleSheet(_COMBO_NORMAL_STYLE)
 
@@ -716,6 +829,28 @@ class EncouragementEditorDialog(QDialog):
         self._delete_btn.setEnabled(False)
         self._title_edit.setFocus()
 
+    def _populate_keyword_combo(self, title_text: str) -> None:
+        """Rebuild the keyword combo items from the words in *title_text*."""
+        words: list[str] = []
+        seen: set[str] = set()
+        for word in re.sub(r"[^a-zA-Z0-9 ]", " ", title_text).split():
+            lower = word.lower()
+            if lower not in seen:
+                seen.add(lower)
+                words.append(word)
+        self._keyword_combo.blockSignals(True)
+        self._keyword_combo.clear()
+        self._keyword_combo.addItem("(Select word)", userData="")
+        for w in words:
+            self._keyword_combo.addItem(w, userData=w)
+        self._keyword_combo.blockSignals(False)
+
+    def _on_title_changed_for_keyword(self) -> None:
+        """Repopulate keyword combo and clear selection whenever the title changes."""
+        self._populate_keyword_combo(self._title_edit.text())
+        # Always reset so the user must re-select after any title edit.
+        self._keyword_combo.setCurrentIndex(0)  # triggers currentIndexChanged → _on_any_field_changed
+
     def _on_any_field_changed(self) -> None:
         """Called whenever any form field changes value."""
         if self._original_data is None:
@@ -729,6 +864,11 @@ class EncouragementEditorDialog(QDialog):
                 default = "general"
             elif key == "background":
                 default = None
+            elif key == "verse_refs":
+                orig_val = list(self._original_data.get("verse_refs", []) or [])
+                if value != orig_val:
+                    changed = True
+                continue
             else:
                 default = ""
             orig_val = self._original_data.get(key, default)
@@ -742,7 +882,10 @@ class EncouragementEditorDialog(QDialog):
         # Also mark dirty if this is a brand-new item (nothing was set before)
         if self._is_new:
             # Only mark dirty once something has actually been typed
-            any_filled = any(v for v in current.values() if v and v != "general")
+            any_filled = any(
+                v for k, v in current.items()
+                if k not in ("subject", "verse_refs") and v
+            ) or bool(current.get("verse_refs"))
             if any_filled:
                 self._mark_dirty()
                 self._apply_field_colors(current)
@@ -782,7 +925,7 @@ class EncouragementEditorDialog(QDialog):
         data = self._collect_form_data()
 
         # Validate: all fields required except optional ones
-        _OPTIONAL = {"subject", "note", "background"}
+        _OPTIONAL = {"subject", "note", "background", "verse_refs"}
         missing = [k for k, v in data.items() if k not in _OPTIONAL and not v]
         if missing:
             QMessageBox.warning(
@@ -878,6 +1021,66 @@ class EncouragementEditorDialog(QDialog):
             # Select the item first so _current_index is correct
             self._list_widget.setCurrentRow(row)
             self._on_delete()
+
+    # ------------------------------------------------------------------
+    # Verse selection
+    # ------------------------------------------------------------------
+
+    def _on_choose_verses(self) -> None:
+        from ui.tools.bible_browser_dialog import BibleBrowserDialog
+        dlg = BibleBrowserDialog(
+            bible_library=self._bible_library,
+            selected_refs=self._selected_verse_refs,
+            select_mode=True,
+            parent=self,
+        )
+        dlg.exec()
+        self._selected_verse_refs = dlg.get_selected_refs()
+        self._update_verses_label()
+        self._on_any_field_changed()
+
+    def _update_verses_label(self) -> None:
+        refs = self._selected_verse_refs
+        if not refs:
+            self._verses_label.setText("No verses selected.")
+            self._verses_label.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt;"
+                f"color: {COLOR_TEXT_MUTED}; background: transparent;"
+            )
+        elif len(refs) == 1:
+            self._verses_label.setText(refs[0].get("display", ""))
+            self._verses_label.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt;"
+                f"color: {COLOR_TEXT}; background: transparent;"
+            )
+        else:
+            self._verses_label.setText("Multiple Verses")
+            self._verses_label.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt;"
+                f"color: {COLOR_TEXT}; background: transparent;"
+            )
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj is self._verses_label:
+            if event.type() == QEvent.Type.Enter and self._selected_verse_refs:
+                if self._verse_tooltip is None:
+                    self._verse_tooltip = _VerseTooltipPopup()
+                self._verse_tooltip.update_content(
+                    self._selected_verse_refs, self._bible_library
+                )
+                # Position below the label
+                pos = self._verses_label.mapToGlobal(
+                    self._verses_label.rect().bottomLeft()
+                )
+                self._verse_tooltip.move(pos)
+                self._verse_tooltip.show()
+                self._verse_tooltip.raise_()
+                return False
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                if self._verse_tooltip is not None:
+                    self._verse_tooltip.hide()
+                return False
+        return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
     # Background combo + preview

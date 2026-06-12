@@ -12,6 +12,19 @@ from urllib.parse import urlparse
 from shane_common.io.atomic import write_json_atomic
 
 
+_SLOW_BROWSER_SESSION_IO_THRESHOLD_MS = 25.0
+
+
+def _log_slow_browser_session_io(operation: str, started_at: float, path: Path) -> None:
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    if elapsed_ms < _SLOW_BROWSER_SESSION_IO_THRESHOLD_MS:
+        return
+    print(
+        f"[BrowserSession] slow operation: {operation} took {elapsed_ms:.1f} ms path={path}",
+        flush=True,
+    )
+
+
 def browser_sessions_dir(data_root: Path) -> Path:
     return Path(data_root) / "data" / "browser_sessions"
 
@@ -146,14 +159,19 @@ class BrowserSessionManager:
             return dict(payload)
 
     def _read_payload_unlocked(self) -> dict[str, Any]:
+        started_at = time.perf_counter()
         if not self._path.exists():
+            _log_slow_browser_session_io("BrowserSessionManager._read_payload_unlocked", started_at, self._path)
             return {"is_active": False}
         try:
             payload = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            _log_slow_browser_session_io("BrowserSessionManager._read_payload_unlocked", started_at, self._path)
             return {"is_active": False}
         if isinstance(payload, dict):
+            _log_slow_browser_session_io("BrowserSessionManager._read_payload_unlocked", started_at, self._path)
             return payload
+        _log_slow_browser_session_io("BrowserSessionManager._read_payload_unlocked", started_at, self._path)
         return {"is_active": False}
 
     def _write_payload_unlocked(self, payload: dict[str, Any]) -> None:
@@ -226,15 +244,20 @@ class ExtensionHeartbeatMonitor:
             return self._decorate_status(payload)
 
     def _read_payload_unlocked(self) -> dict[str, Any]:
+        started_at = time.perf_counter()
         if not self._path.exists():
+            _log_slow_browser_session_io("ExtensionHeartbeatMonitor._read_payload_unlocked", started_at, self._path)
             return {"is_alive": False, "stale_after_seconds": self._stale_after_seconds}
         try:
             payload = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            _log_slow_browser_session_io("ExtensionHeartbeatMonitor._read_payload_unlocked", started_at, self._path)
             return {"is_alive": False, "stale_after_seconds": self._stale_after_seconds}
         if isinstance(payload, dict):
             payload.setdefault("stale_after_seconds", self._stale_after_seconds)
+            _log_slow_browser_session_io("ExtensionHeartbeatMonitor._read_payload_unlocked", started_at, self._path)
             return payload
+        _log_slow_browser_session_io("ExtensionHeartbeatMonitor._read_payload_unlocked", started_at, self._path)
         return {"is_alive": False, "stale_after_seconds": self._stale_after_seconds}
 
     def _write_payload_unlocked(self, payload: dict[str, Any]) -> None:

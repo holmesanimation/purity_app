@@ -20,12 +20,13 @@ import yaml
 class Reminder(TypedDict, total=False):
     """One entry from reminders.yaml."""
 
-    title: str       # bold headline — identity/calling statement
-    note: str        # regular-weight supporting affirmation
-    verse_ref: str   # scripture reference (bold in dialog)
-    verse_text: str  # full scripture quote (italic in dialog)
-    subject: str     # optional reason ID (e.g. "tired") or "general"
-    background: str  # optional filename from the image library (e.g. "forest.jpg")
+    title: str             # bold headline — identity/calling statement
+    keyword: str           # one word from the title; blanked out in the web popup unlock step
+    note: str              # regular-weight supporting affirmation
+    question: str          # optional yes/no commitment question shown before internet opens
+    verse_refs: list       # list of {"key": "john_3_16", "display": "John 3:16"}
+    subject: str           # optional reason ID (e.g. "tired") or "general"
+    background: str        # optional filename from the image library (e.g. "forest.jpg")
 
 
 # Bundled default lives alongside the rest of the app's static data.

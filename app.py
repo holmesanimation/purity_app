@@ -2,6 +2,11 @@
 # Original app logic preserved in reminder_dialog.py, chrome_dialog.py,
 # focus_guard.py, focus_guard_chrome_trigger.py (untouched).
 
+# Start console capture as early as possible so no output is missed.
+# Logs land in TEMP initially; relocate() moves them once run_id is known.
+from shane_common.logging.console_capture import ConsoleCapture
+ConsoleCapture.start()
+
 import sys
 import os
 import subprocess
@@ -349,6 +354,7 @@ class MainWindow(QMainWindow):
         self._panic_elevated: bool = False
         self._panic_last_override_count: int = 0
         self._panic_reminders = None  # initialised lazily on first use
+        self._bible_library = None     # initialised lazily on first use
         self._encouragement_editor_win = None  # lazy; opened via Tools menu
         self._active_panic_session: PanicSession | None = None
         self._active_panic_window: QWidget | None = None
@@ -480,17 +486,20 @@ class MainWindow(QMainWindow):
         debug_menu.addAction(expire_web_action)
 
     def _open_encouragement_editor(self) -> None:
+        from services.bible_library import BibleLibrary
         from services.panic_reminders import PanicReminders
         from ui.tools.encouragement_editor_dialog import EncouragementEditorDialog
 
         if self._panic_reminders is None and self._runtime is not None:
             self._panic_reminders = PanicReminders(self._runtime.data_root)
-        if self._panic_reminders is None:
+        if self._bible_library is None and self._runtime is not None:
+            self._bible_library = BibleLibrary(self._runtime.data_root)
+        if self._panic_reminders is None or self._bible_library is None:
             return
 
         if self._encouragement_editor_win is None:
             self._encouragement_editor_win = EncouragementEditorDialog(
-                self._panic_reminders, parent=None
+                self._panic_reminders, self._bible_library, parent=None
             )
             # Clear the reference when the window is closed so it can be
             # garbage-collected and a fresh instance is created on next open.
@@ -882,13 +891,19 @@ class MainWindow(QMainWindow):
         if self._panic_reminders is None and self._runtime is not None:
             from services.panic_reminders import PanicReminders
             self._panic_reminders = PanicReminders(self._runtime.data_root)
+        if self._bible_library is None and self._runtime is not None:
+            from services.bible_library import BibleLibrary
+            self._bible_library = BibleLibrary(self._runtime.data_root)
         reminder = (
             self._panic_reminders.get_random()
             if self._panic_reminders is not None
             else None
         )
 
-        reason_dialog = PanicReasonDialog(stats=stats, reminder=reminder, parent=None)
+        reason_dialog = PanicReasonDialog(
+            stats=stats, reminder=reminder,
+            bible_library=self._bible_library, parent=None
+        )
         if reason_dialog.exec() != QDialog.DialogCode.Accepted:
             # User closed the reason dialog without selecting — record abandoned.
             from services.journal_events import emit_panic_closed
@@ -1413,6 +1428,18 @@ def main():
         return 0
 
     runtime = create_purity_runtime(data_root)
+
+    # Relocate console CSV from TEMP to the permanent logs directory.
+    try:
+        _logs_dir = runtime.data_root / "_system" / "purity" / "logs" / runtime.session.run_id
+        ConsoleCapture.relocate(
+            str(_logs_dir),
+            filename=f"console_{runtime.session.run_id}",
+        )
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
     browser_session_manager = BrowserSessionManager(data_root)
     browser_session_manager.clear_session()
     extension_heartbeat_monitor = ExtensionHeartbeatMonitor(data_root, stale_after_seconds=35.0)

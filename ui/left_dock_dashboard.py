@@ -5,7 +5,7 @@ monitor.  It animates between:
 
   • Collapsed — a 2 px accent-coloured strip, plus a 20 px wide semicircular
     tab button centred vertically on the right edge.
-  • Expanded  — a 1 000 px wide panel (content area to be added later), with
+  • Expanded  — a 700 px wide panel (content area to be added later), with
     the same tab button now at the right edge of the full panel.
 
 Clicking the tab toggles between the two states.
@@ -38,7 +38,7 @@ from styles.theme import (
 # Layout constants
 # ---------------------------------------------------------------------------
 
-_EXPANDED_CONTENT_W: int = 1000   # px — width of the content area when open
+_EXPANDED_CONTENT_W: int = 700   # px — width of the content area when open
 _COLLAPSED_CONTENT_W: int = 2     # px — width of the visible strip when closed
 
 _TAB_W: int = 20                  # px — width of the semicircle tab
@@ -161,7 +161,7 @@ class LeftDockDashboard(QWidget):
     caller typically stores it as ``self._left_dock``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, bible_library=None) -> None:
         super().__init__(
             None,
             Qt.WindowType.Tool
@@ -190,7 +190,7 @@ class LeftDockDashboard(QWidget):
         inner_layout.setSpacing(0)
 
         from ui.verse_memory_widget import VerseMemoryWidget
-        self._verse_widget = VerseMemoryWidget(parent=inner)
+        self._verse_widget = VerseMemoryWidget(bible_library=bible_library, parent=inner)
         inner_layout.addWidget(self._verse_widget)
         inner_layout.addStretch()
 

@@ -25,6 +25,7 @@ from services.supervisor_client import PuritySupervisorClient
 APP_ID = "purity_app"
 APPROVED_MARKER = Path(tempfile.gettempdir()) / "purity_web_approved"
 REQUEST_SCHEMA_VERSION = 1
+_SLOW_REQUEST_IO_THRESHOLD_MS = 25.0
 
 
 def resolve_data_root() -> Path:
@@ -80,6 +81,28 @@ def append_web_request_log(
         traceback.print_exc()
 
 
+def _log_slow_request_io(
+    data_root: Path,
+    operation: str,
+    started_at: float,
+    *,
+    count: int | None = None,
+) -> None:
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    if elapsed_ms < _SLOW_REQUEST_IO_THRESHOLD_MS:
+        return
+    details: dict[str, Any] = {"elapsed_ms": round(elapsed_ms, 1)}
+    if count is not None:
+        details["count"] = int(count)
+    append_web_request_log(
+        data_root,
+        "diagnostic.slow_request_io",
+        f"{operation} took {elapsed_ms:.1f} ms",
+        level="WARN",
+        details=details,
+    )
+
+
 def submit_web_launch_request(data_root: Path, args: list[str]) -> Path:
     request_id = uuid.uuid4().hex
     path = request_inbox_dir(data_root) / f"{int(time.time() * 1000)}_{request_id}.json"
@@ -126,8 +149,10 @@ def submit_show_app_request(data_root: Path, *, source: str = "app_launch") -> P
 
 
 def read_pending_web_launch_requests(data_root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    started_at = time.perf_counter()
     inbox = request_inbox_dir(data_root)
     if not inbox.is_dir():
+        _log_slow_request_io(data_root, "read_pending_web_launch_requests", started_at, count=0)
         return []
 
     pending: list[tuple[Path, dict[str, Any]]] = []
@@ -154,12 +179,20 @@ def read_pending_web_launch_requests(data_root: Path) -> list[tuple[Path, dict[s
                 level="ERROR",
                 details={"path": str(path), "payload_type": type(data).__name__},
             )
+    _log_slow_request_io(
+        data_root,
+        "read_pending_web_launch_requests",
+        started_at,
+        count=len(pending),
+    )
     return pending
 
 
 def read_pending_app_control_requests(data_root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    started_at = time.perf_counter()
     inbox = app_control_inbox_dir(data_root)
     if not inbox.is_dir():
+        _log_slow_request_io(data_root, "read_pending_app_control_requests", started_at, count=0)
         return []
 
     pending: list[tuple[Path, dict[str, Any]]] = []
@@ -186,6 +219,12 @@ def read_pending_app_control_requests(data_root: Path) -> list[tuple[Path, dict[
                 level="ERROR",
                 details={"path": str(path), "payload_type": type(data).__name__},
             )
+    _log_slow_request_io(
+        data_root,
+        "read_pending_app_control_requests",
+        started_at,
+        count=len(pending),
+    )
     return pending
 
 
