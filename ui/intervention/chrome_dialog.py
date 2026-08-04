@@ -1,6 +1,7 @@
 import tkinter as tk
 import os
 import subprocess
+import traceback
 from ui.intervention import reminder_dialog as rd
 
 
@@ -17,6 +18,7 @@ def show_chrome_dialog():
                 hwnds = rd._enum_windows_for_pids(chrome_pids)
                 disabled_chrome_hwnds = rd.disable_windows(hwnds)
         except Exception:
+            traceback.print_exc()
             disabled_chrome_hwnds = []
 
     root = tk.Tk()
@@ -45,12 +47,12 @@ def show_chrome_dialog():
                 for proc in ("chrome", "msedge"):
                     subprocess.run(["pkill", "-f", proc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
-            pass
+            traceback.print_exc()
         try:
             if os.name == "nt" and disabled_chrome_hwnds:
                 rd.enable_windows(disabled_chrome_hwnds)
         except Exception:
-            pass
+            traceback.print_exc()
 
     def on_choice(label):
         if label != "Need":
@@ -60,7 +62,7 @@ def show_chrome_dialog():
                 if os.name == "nt" and disabled_chrome_hwnds:
                     rd.enable_windows(disabled_chrome_hwnds)
             except Exception:
-                pass
+                traceback.print_exc()
         root.destroy()
 
     for label in ("Waiting", "Bored", "Tempted", "Need"):
@@ -72,7 +74,7 @@ def show_chrome_dialog():
             if os.name == "nt" and disabled_chrome_hwnds:
                 rd.enable_windows(disabled_chrome_hwnds)
         except Exception:
-            pass
+            traceback.print_exc()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
@@ -84,4 +86,4 @@ def show_chrome_dialog():
             if os.name == "nt" and disabled_chrome_hwnds:
                 rd.enable_windows(disabled_chrome_hwnds)
         except Exception:
-            pass
+            traceback.print_exc()

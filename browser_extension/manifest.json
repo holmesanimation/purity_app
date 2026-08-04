@@ -11,6 +11,15 @@
     "tabs",
     "webNavigation"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "safesearch",
+        "enabled": true,
+        "path": "safesearch_rules.json"
+      }
+    ]
+  },
   "host_permissions": [
     "<all_urls>",
     "http://127.0.0.1:8765/*"

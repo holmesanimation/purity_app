@@ -3,11 +3,12 @@
 import difflib
 import random
 import re
+import traceback
 from pathlib import Path
 from typing import Iterable, Optional
 
-from PySide6.QtCore import Qt, QPoint, QRect
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import Qt, QPoint, QRect, QPropertyAnimation, QEasingCurve, QByteArray
+from PySide6.QtGui import QColor, QPainter, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
@@ -277,7 +278,7 @@ def _evaluate_verse(typed: str, original: str) -> tuple[int, int, int, list[int]
 
 
 def _is_proper_sentence(text: str) -> bool:
-    return len(text.strip().split()) >= 4
+    return len(text.strip().split()) > 6
 
 
 def _ordered_feelings(feelings: Iterable[str]) -> list[str]:
@@ -287,6 +288,19 @@ def _ordered_feelings(feelings: Iterable[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Full-screen dim overlay  (same as PanicReasonDialog)
 # ---------------------------------------------------------------------------
+
+class _KeywordLineEdit(QLineEdit):
+    """QLineEdit that consumes Return/Enter so it never activates a focused button."""
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Emit returnPressed (handled by WebPopup._on_keyword_confirmed)
+            # then consume the event so it cannot propagate and click a button.
+            self.returnPressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 class _ScreenDimOverlay(QWidget):
     def __init__(self) -> None:
@@ -345,7 +359,7 @@ class WebPopup(BasePopup):
                 if all_reminders:
                     reminder = random.choice(all_reminders)
             except Exception:
-                pass
+                traceback.print_exc()
 
         if reminder is not None:
             self._verse_title    = reminder.get("title", "")
@@ -420,7 +434,7 @@ class WebPopup(BasePopup):
                 lbl_before = QLabel(parts[0])
                 lbl_before.setStyleSheet(_title_style)
                 title_hl.addWidget(lbl_before)
-            self._keyword_input = QLineEdit()
+            self._keyword_input = _KeywordLineEdit()
             from PySide6.QtGui import QFont, QFontMetrics
             _kw_font = QFont(FONT_FAMILY, _FS_REMINDER_TITLE)
             _kw_font.setWeight(QFont.Weight.Bold)
@@ -432,8 +446,8 @@ class WebPopup(BasePopup):
                 f"QLineEdit {{"
                 f"  background: transparent;"
                 f"  border: none;"
-                f"  border-bottom: 2px solid {COLOR_ACCENT_DARK};"
-                f"  color: {COLOR_ACCENT_DARK};"
+                f"  border-bottom: 2px solid {COLOR_ACCENT};"
+                f"  color: {COLOR_ACCENT};"
                 f"  font-family: '{FONT_FAMILY}';"
                 f"  font-size: {_FS_REMINDER_TITLE}pt;"
                 f"  font-weight: 700;"
@@ -441,6 +455,7 @@ class WebPopup(BasePopup):
                 f"}}"
             )
             self._keyword_input.textChanged.connect(self._on_keyword_typed)
+            self._keyword_input.returnPressed.connect(self._on_keyword_confirmed)
             title_hl.addWidget(self._keyword_input)
             if len(parts) > 1 and parts[1]:
                 lbl_after = QLabel(parts[1])
@@ -489,21 +504,6 @@ class WebPopup(BasePopup):
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(10)
 
-        # ── What are you doing on the computer right now? ─────────────
-        purpose_title = QLabel("What are you doing on the computer right now?")
-        purpose_title.setStyleSheet(
-            f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
-            f"font-size: {FONT_SIZE_MEDIUM}pt; font-weight: 700; background: transparent;"
-        )
-        vbox.addWidget(purpose_title)
-
-        self._reason_edit = QTextEdit()
-        self._reason_edit.setPlaceholderText("Use more than 3 words\u2026")
-        self._reason_edit.setFixedHeight(52)
-        self._reason_edit.setStyleSheet(_TEXT_EDIT_STYLE)
-        self._reason_edit.textChanged.connect(self._sync_commit_enabled)
-        vbox.addWidget(self._reason_edit)
-
         # ── Why are you going on the internet? ────────────────────────
         internet_title = QLabel("Why are you going on the internet?")
         internet_title.setStyleSheet(
@@ -518,9 +518,10 @@ class WebPopup(BasePopup):
         internet_row.setContentsMargins(0, 0, 0, 0)
         internet_row.setSpacing(8)
         for reason_id, label, base_color, dark_color, faded_color in [
-            ("work",       "Work",       "#2d7a4f", "#1e5235", "#c8d9cc"),
-            ("comfort",    "Comfort",    "#c06a00", "#7a4300", "#dfd0bc"),
-            ("temptation", "Temptation", "#b03020", "#7a1e12", "#ddc8c5"),
+            ("work",          "Work",          "#2d7a4f", "#1e5235", "#c8d9cc"),
+            ("entertainment", "Entertainment", "#c06a00", "#7a4300", "#dfd0bc"),
+            ("boredom",       "Boredom",       "#c06a00", "#7a4300", "#dfd0bc"),
+            ("temptation",    "Temptation",    "#b03020", "#7a1e12", "#ddc8c5"),
         ]:
             btn = QPushButton(label)
             btn.setMinimumHeight(38)
@@ -533,6 +534,14 @@ class WebPopup(BasePopup):
             self._internet_reason_btns[reason_id] = (btn, base_color, dark_color, faded_color)
         internet_row.addStretch()
         vbox.addLayout(internet_row)
+
+        # ── What will you be doing online? ────────────────────────────
+        self._reason_edit = QTextEdit()
+        self._reason_edit.setPlaceholderText("Describe what you\u2019ll be doing online\u2026 (more than 6 words)")
+        self._reason_edit.setFixedHeight(52)
+        self._reason_edit.setStyleSheet(_TEXT_EDIT_STYLE)
+        self._reason_edit.textChanged.connect(self._sync_commit_enabled)
+        vbox.addWidget(self._reason_edit)
 
         # ── Session length ────────────────────────────────────────────
         time_title = QLabel("How long is this internet session?")
@@ -710,9 +719,49 @@ class WebPopup(BasePopup):
     # ------------------------------------------------------------------
 
     def _on_keyword_typed(self, text: str) -> None:
-        if text.strip().lower() == self._verse_keyword.lower():
-            self._session_form_widget.show()
-            self.adjustSize()
+        """Visual feedback only — reveal happens on Enter."""
+        pass
+
+    def _on_keyword_confirmed(self) -> None:
+        """Called when the user presses Enter in the keyword input."""
+        if getattr(self, "_keyword_input", None) is None:
+            return
+        text = self._keyword_input.text()
+        if text.strip().lower() != self._verse_keyword.lower():
+            return
+        if self._session_form_widget.isVisible():
+            return
+        self._animate_form_open()
+
+    def _animate_form_open(self) -> None:
+        # Show the form unconstrained so the layout can compute its natural size.
+        self._session_form_widget.setMaximumHeight(16_777_215)
+        self._session_form_widget.show()
+        self._session_form_widget.updateGeometry()
+        form_target_h = self._session_form_widget.sizeHint().height()
+
+        # Collapse back to zero for the animation start.
+        self._session_form_widget.setMaximumHeight(0)
+        start_dialog_h = self.height()
+
+        anim = QPropertyAnimation(self._session_form_widget, QByteArray(b"maximumHeight"), self)
+        anim.setDuration(400)
+        anim.setStartValue(0)
+        anim.setEndValue(form_target_h)
+        anim.setEasingCurve(QEasingCurve.Type.OutExpo)
+
+        # Drive the dialog height directly — avoids adjustSize() querying the
+        # form widget's full sizeHint and jumping to the target height immediately.
+        def _on_value(v: int) -> None:
+            self.resize(self.width(), start_dialog_h + v)
+
+        anim.valueChanged.connect(_on_value)
+        anim.finished.connect(lambda: (
+            self._session_form_widget.setMaximumHeight(16_777_215),
+            self.adjustSize(),
+        ))
+        anim.start()
+        self._form_open_anim = anim  # keep reference so GC doesn't kill it
 
     def _reveal_feelings(self) -> None:
         self._feeling_btn.hide()
@@ -812,11 +861,5 @@ class WebPopup(BasePopup):
         self.reason_text = self._reason_edit.toPlainText().strip()
         self.selected_choice = "internet_session"
         self.selected_feelings = []
-        if self._verse_question:
-            from ui.intervention.encouragement_question_dialog import EncouragementQuestionDialog
-            from PySide6.QtWidgets import QDialog
-            dlg = EncouragementQuestionDialog(question=self._verse_question, parent=self)
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
         self.accept()
 

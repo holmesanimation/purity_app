@@ -11,8 +11,15 @@ from services.browser_session import BrowserSessionManager, ExtensionHeartbeatMo
 class _BrowserSessionRequestHandler(BaseHTTPRequestHandler):
     session_manager: BrowserSessionManager | None = None
     heartbeat_monitor: ExtensionHeartbeatMonitor | None = None
+    internet_settings_service: Any = None
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/internet-settings":
+            svc = self.internet_settings_service
+            domains: list[str] = svc.load_blacklisted_domains() if svc is not None else []
+            self._write_json(200, {"blacklisted_domains": domains})
+            return
+
         if self.path != "/browser-session":
             self._write_json(404, {"error": "not_found"})
             return
@@ -97,9 +104,11 @@ class BrowserSessionApiServer:
         *,
         host: str = "127.0.0.1",
         port: int = 8765,
+        internet_settings_service: Any = None,
     ) -> None:
         self._session_manager = session_manager
         self._heartbeat_monitor = heartbeat_monitor
+        self._internet_settings_service = internet_settings_service
         self._host = host
         self._port = port
         self._server: ThreadingHTTPServer | None = None
@@ -114,6 +123,7 @@ class BrowserSessionApiServer:
             return
         _BrowserSessionRequestHandler.session_manager = self._session_manager
         _BrowserSessionRequestHandler.heartbeat_monitor = self._heartbeat_monitor
+        _BrowserSessionRequestHandler.internet_settings_service = self._internet_settings_service
         self._server = ThreadingHTTPServer((self._host, self._port), _BrowserSessionRequestHandler)
         self._port = int(self._server.server_address[1])
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)

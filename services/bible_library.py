@@ -22,6 +22,7 @@ as the most recently saved version (used for tooltip previews).
 from __future__ import annotations
 
 import json
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +50,7 @@ class BibleLibrary:
                 raw = json.loads(self._path.read_text(encoding="utf-8"))
                 self._data = raw if isinstance(raw, dict) else {}
             except Exception:
+                traceback.print_exc()
                 self._data = {}
         if not self._memorizing_path.exists():
             self._memorizing = set()
@@ -57,6 +59,7 @@ class BibleLibrary:
                 raw_m = json.loads(self._memorizing_path.read_text(encoding="utf-8"))
                 self._memorizing = set(raw_m) if isinstance(raw_m, list) else set()
             except Exception:
+                traceback.print_exc()
                 self._memorizing = set()
 
     def _save(self) -> None:
@@ -170,3 +173,18 @@ class BibleLibrary:
     def get_memorizing_list(self) -> list[str]:
         """Return a sorted list of verse keys marked for memorization."""
         return sorted(self._memorizing)
+
+    def random_verse_text(self) -> str | None:
+        """Return a randomly chosen verse as a formatted string, or None if the library is empty."""
+        import random
+
+        entries = [v for v in self._data.values() if v.get("versions")]
+        if not entries:
+            return None
+        entry = random.choice(entries)
+        versions = entry.get("versions", [])
+        text = versions[-1].get("text", "") if versions else ""
+        display = entry.get("display", "")
+        if not text:
+            return None
+        return f'"{text}" \u2014 {display}'

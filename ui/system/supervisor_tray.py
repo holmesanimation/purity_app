@@ -140,11 +140,13 @@ class PurityTrayApp(BaseTrayApp):
         data_root: Path,
         main_window: QtWidgets.QWidget | None = None,
         reload_fn=None,
+        panic_button: QtWidgets.QWidget | None = None,
         parent=None,
     ) -> None:
         self._client = PuritySupervisorClient(data_root)
         self._main_window = main_window
         self._reload_fn = reload_fn
+        self._panic_btn = panic_button
         liveness_path = (
             data_root / "_system" / "purity" / "locks" / "purity_tray.liveness.json"
         )
@@ -167,6 +169,12 @@ class PurityTrayApp(BaseTrayApp):
         if self._reload_fn is not None:
             reload_action = self._menu.addAction("Reload")
             reload_action.triggered.connect(self._request_reload)
+        self._panic_visible_action = None
+        if self._panic_btn is not None:
+            self._panic_visible_action = self._menu.addAction("Show Panic Button")
+            self._panic_visible_action.setCheckable(True)
+            self._panic_visible_action.setChecked(True)
+            self._panic_visible_action.triggered.connect(self._toggle_panic_button)
         self._menu.addSeparator()
 
     # ------------------------------------------------------------------
@@ -207,6 +215,32 @@ class PurityTrayApp(BaseTrayApp):
 
         if self._status_window.isVisible():
             self._status_window.refresh()
+
+    def _save_prefs(self) -> None:
+        if self._panic_visible_action is None:
+            return
+        s = self._settings()
+        s.setValue("panic_button/visible", self._panic_visible_action.isChecked())
+        s.sync()
+
+    def _restore_prefs(self) -> None:
+        if self._panic_btn is None or self._panic_visible_action is None:
+            return
+        s = self._settings()
+        visible = s.value("panic_button/visible", True, type=bool)
+        self._panic_visible_action.setChecked(visible)
+        if visible:
+            self._panic_btn.show()
+        else:
+            self._panic_btn.hide()
+
+    def _toggle_panic_button(self) -> None:
+        if self._panic_btn is None or self._panic_visible_action is None:
+            return
+        if self._panic_visible_action.isChecked():
+            self._panic_btn.show()
+        else:
+            self._panic_btn.hide()
 
     def _on_show_hide(self) -> None:
         if self._show_main_window():

@@ -24,7 +24,9 @@ def already_running():
     try:
         s.bind(("127.0.0.1", 65432))
         return False
-    except:
+    except Exception:
+        import traceback
+        traceback.print_exc()
         return True
 
 
@@ -180,6 +182,8 @@ def load_belief_scripture_config():
         with CONFIG_PATH.open("r", encoding="utf-8") as f:
             return normalize_belief_config(json.load(f))
     except Exception:
+        import traceback
+        traceback.print_exc()
         return default_belief_scripture_map()
 
 

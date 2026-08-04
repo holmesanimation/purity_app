@@ -19,6 +19,7 @@ Usage::
 
 from __future__ import annotations
 
+import traceback
 from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
@@ -578,7 +579,7 @@ class PanicInterventionWindow(QMainWindow):
             try:
                 self._session.close(PanicSessionOutcome.ABANDONED)
             except Exception:
-                pass
+                traceback.print_exc()
             if self._runtime is not None:
                 try:
                     emit_panic_closed(
@@ -587,7 +588,7 @@ class PanicInterventionWindow(QMainWindow):
                         outcome=PanicSessionOutcome.ABANDONED.value,
                     )
                 except Exception:
-                    pass
+                    traceback.print_exc()
 
         if self._countdown_timer is not None:
             self._countdown_timer.stop()

@@ -27,4 +27,11 @@ def make_notes_writer(run_id: str = "default") -> NotesWriter:
 
 notes_writer = make_notes_writer(run_id="default")
 
+journal_notes_writer = NotesWriter(
+    notes_root=str(_NOTES_ROOT),
+    owner="journal",
+    platform="PurityApp",
+    run_id="default",
+)
+
 notes_repo = NotesRepository(_NOTES_ROOT)

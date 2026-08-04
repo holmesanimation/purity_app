@@ -14,6 +14,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+import traceback
 
 # Allow running as a standalone script from any working directory.
 _HERE = Path(__file__).parent.resolve()
@@ -52,6 +53,7 @@ def _is_app_mutex_held() -> bool:
             return True
         return False
     except Exception:
+        traceback.print_exc()
         return False  # fail open — assume not running, let app.py deduplicate
 
 

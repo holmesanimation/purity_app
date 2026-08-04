@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +45,7 @@ class PanicStats:
                 if isinstance(raw, dict):
                     self._data = raw
             except Exception:
+                traceback.print_exc()
                 self._data = {}
         else:
             self._data = {}

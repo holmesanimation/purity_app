@@ -10,11 +10,6 @@ function parseHash() {
   };
 }
 
-async function allowBlockedUrl(url) {
-  const response = await chrome.runtime.sendMessage({ type: "allow-blocked-url", url });
-  return Boolean(response?.ok);
-}
-
 document.addEventListener("DOMContentLoaded", async () => {
   const { reason, query, url } = parseHash();
 
@@ -39,27 +34,19 @@ document.addEventListener("DOMContentLoaded", async () => {
         window.close();
       }
     });
-  } else {
-    // URL whitelist block mode
-    document.getElementById("url-block").style.display = "block";
-    const urlLabel = document.getElementById("blocked-url");
-    const yesBtn = document.getElementById("yes-btn");
-    const noBtn = document.getElementById("no-btn");
-
-    urlLabel.textContent = url || "Unknown URL";
-
-    yesBtn.addEventListener("click", async () => {
-      yesBtn.disabled = true;
-      noBtn.disabled = true;
-      const ok = await allowBlockedUrl(url);
-      if (!ok) {
-        yesBtn.disabled = false;
-        noBtn.disabled = false;
-      }
+  } else if (reason === "blacklisted") {
+    // URL blacklist block mode
+    document.getElementById("blacklisted-block").style.display = "block";
+    document.getElementById("blacklisted-url").textContent = url || "Unknown URL";
+    document.getElementById("blacklisted-back-btn").addEventListener("click", () => {
+      if (history.length > 1) { history.back(); } else { window.close(); }
     });
-
-    noBtn.addEventListener("click", () => {
-      window.close();
+  } else {
+    // No active session (default fallback)
+    document.getElementById("url-block").style.display = "block";
+    document.getElementById("blocked-url").textContent = url || "";
+    document.getElementById("no-session-back-btn").addEventListener("click", () => {
+      if (history.length > 1) { history.back(); } else { window.close(); }
     });
   }
 });

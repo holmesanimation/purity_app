@@ -18,6 +18,7 @@ Usage::
 
 from __future__ import annotations
 
+import traceback
 from typing import Optional
 
 from PySide6.QtCore import QPoint, QRect, Qt
@@ -419,6 +420,7 @@ class PanicReasonDialog(BasePopup):
         try:
             top = self._stats.get_top_reasons(3)
         except Exception:
+            traceback.print_exc()
             return
         displayed_ids = {rid for rid, _ in REASON_LABELS}
         recurring = [rid for rid in top if rid in displayed_ids]

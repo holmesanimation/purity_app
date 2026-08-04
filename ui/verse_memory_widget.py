@@ -142,7 +142,7 @@ class VerseMemoryWidget(QWidget):
             self._verse_text = ""
             self._verse_words = []
             self._ref_lbl.setText("No verses marked for memorization.")
-            self._verse_display.hide()
+            self._verse_display.setText("")
             return
         self.load_verse(random.choice(keys))
 
@@ -183,6 +183,7 @@ class VerseMemoryWidget(QWidget):
         vf.setSpacing(8)
 
         self._ref_lbl = QLabel()
+        self._ref_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ref_lbl.setStyleSheet(
             f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
             f"font-size: {FONT_SIZE_NORMAL}pt; font-weight: 700; background: transparent;"
@@ -192,11 +193,11 @@ class VerseMemoryWidget(QWidget):
         self._verse_display = QLabel("")
         self._verse_display.setWordWrap(True)
         self._verse_display.setTextFormat(Qt.TextFormat.RichText)
+        self._verse_display.setFixedHeight(80)
         self._verse_display.setStyleSheet(
             f"font-family: 'Georgia'; font-size: {FONT_SIZE_LARGE}pt;"
             f" font-style: italic; color: {COLOR_TEXT_MUTED}; background: transparent;"
         )
-        self._verse_display.hide()
         vf.addWidget(self._verse_display)
 
         outer.addWidget(verse_frame)
@@ -291,7 +292,6 @@ class VerseMemoryWidget(QWidget):
         self._eval_label.setText("")
         self._hint_label.hide()
         self._hint_label.setText("")
-        self._verse_display.hide()
         self._verse_display.setText("")
         if self._hint_anim is not None:
             self._hint_anim.stop()
@@ -407,4 +407,3 @@ class VerseMemoryWidget(QWidget):
             + "</p>"
         )
         self._verse_display.setText(html)
-        self._verse_display.show()

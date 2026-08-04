@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -164,7 +165,7 @@ def _launch_supervisor(data_root: Path) -> None:
         _append_startup_log(data_root, "Supervisor watchdog launch requested via Scheduled Task.")
         return
     except Exception:
-        pass
+        traceback.print_exc()
 
     # This module lives at ui/main_window.py — one level below the project root.
     _project_root = Path(__file__).parent.parent
@@ -182,7 +183,7 @@ def _launch_supervisor(data_root: Path) -> None:
         subprocess.Popen(cmd, creationflags=creationflags)
         _append_startup_log(data_root, "Supervisor watchdog launched via direct process spawn.")
     except Exception:
-        pass
+        traceback.print_exc()
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +197,7 @@ class MainWindow(QMainWindow):
         settings_manager: SettingsManager | None = None,
         browser_session_manager: BrowserSessionManager | None = None,
         extension_heartbeat_monitor: ExtensionHeartbeatMonitor | None = None,
+        internet_settings_service=None,
     ):
         super().__init__()
         self._runtime = runtime
@@ -218,6 +220,8 @@ class MainWindow(QMainWindow):
         self._panic_reminders = None  # initialised lazily on first use
         self._bible_library = None     # initialised lazily on first use
         self._encouragement_editor_win = None  # lazy; opened via Tools menu
+        self._internet_settings_win = None  # lazy; opened via Tools menu
+        self._internet_settings_service = internet_settings_service
         self._active_panic_session: PanicSession | None = None
         self._active_panic_window: QWidget | None = None
         self._supervisor_down_alerted: bool = False
@@ -254,7 +258,7 @@ class MainWindow(QMainWindow):
             self._bible_library = BibleLibrary(self._runtime.data_root)
 
         # Left-edge sliding dashboard — kept as a top-level tool window.
-        self._left_dock = LeftDockDashboard(bible_library=self._bible_library)
+        self._left_dock = LeftDockDashboard(bible_library=self._bible_library, main_window=self)
         self._left_dock.show()
 
         # Web session timer pill — hidden until a session is approved.
@@ -387,6 +391,11 @@ class MainWindow(QMainWindow):
         launch_pulse_action.triggered.connect(self._launch_manual_pulse)
         tools_menu.addAction(launch_pulse_action)
 
+        internet_settings_action = QAction("Internet Settings", self)
+        internet_settings_action.setEnabled(self._internet_settings_service is not None)
+        internet_settings_action.triggered.connect(self._open_internet_settings)
+        tools_menu.addAction(internet_settings_action)
+
         debug_menu = menu_bar.addMenu("Debug")
 
         expire_web_action = QAction("Expire Web Session", self)
@@ -427,6 +436,24 @@ class MainWindow(QMainWindow):
         self._encouragement_editor_win.show()
         self._encouragement_editor_win.raise_()
         self._encouragement_editor_win.activateWindow()
+
+    def _open_internet_settings(self) -> None:
+        from ui.tools.internet_settings_dialog import InternetSettingsDialog
+
+        if self._internet_settings_service is None:
+            return
+
+        if self._internet_settings_win is None:
+            self._internet_settings_win = InternetSettingsDialog(
+                self._internet_settings_service, parent=None
+            )
+            self._internet_settings_win.finished.connect(
+                lambda _: setattr(self, "_internet_settings_win", None)
+            )
+
+        self._internet_settings_win.show()
+        self._internet_settings_win.raise_()
+        self._internet_settings_win.activateWindow()
 
     def _open_bible_browser(self) -> None:
         from services.bible_library import BibleLibrary
@@ -824,7 +851,7 @@ class MainWindow(QMainWindow):
             try:
                 session.close(PanicSessionOutcome.ABANDONED)
             except Exception:
-                pass
+                traceback.print_exc()
             if self._runtime is not None:
                 try:
                     emit_panic_closed(
@@ -833,7 +860,7 @@ class MainWindow(QMainWindow):
                         outcome=PanicSessionOutcome.ABANDONED.value,
                     )
                 except Exception:
-                    pass
+                    traceback.print_exc()
             self._active_panic_session = None
             self._active_panic_window = None
             return
@@ -845,7 +872,7 @@ class MainWindow(QMainWindow):
             try:
                 stats.record_reasons(session.selected_reason_ids)
             except Exception:
-                pass
+                traceback.print_exc()
         if self._runtime is not None:
             from services.journal_events import emit_panic_reasons_selected
             emit_panic_reasons_selected(
@@ -1105,7 +1132,7 @@ class MainWindow(QMainWindow):
                     mgr = build_purity_settings_manager()
                 timeout = get_web_session_timeout_seconds(mgr)
             except Exception:
-                pass
+                traceback.print_exc()
         self._web_timer_pill.set_session_title(self._web_session_verse_title)
         self._web_timer_pill.set_timeout(timeout)
         self._web_timer_pill.start_session()
@@ -1204,11 +1231,13 @@ class MainWindow(QMainWindow):
             self._pulse_dialog.activateWindow()
             return
 
+        verse_text = self._bible_library.random_verse_text() if self._bible_library is not None else None
         self._pulse_dialog = PulseDialog(
             pending=pending,
             submit_pulse=lambda **payload: self._handle_pulse_submit(pending, **payload),
             submit_note=lambda text: self._handle_pulse_note_submit(pending, text),
             send_reach_out=lambda sliders, text: self._handle_pulse_reach_out(pending, sliders, text),
+            verse_text=verse_text,
             parent=None,
         )
         self._pulse_dialog.finished.connect(
@@ -1456,7 +1485,7 @@ class MainWindow(QMainWindow):
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     resp.read()
             except Exception:
-                pass
+                traceback.print_exc()
 
     def _show_supervisor_down_dialog(self) -> None:
         """Show a warning dialog and offer to relaunch the supervisor."""
@@ -1550,7 +1579,7 @@ class MainWindow(QMainWindow):
                 try:
                     self._active_panic_session.close(PanicSessionOutcome.ABANDONED)
                 except Exception:
-                    pass
+                    traceback.print_exc()
                 if self._runtime is not None:
                     try:
                         emit_panic_closed(
@@ -1559,7 +1588,7 @@ class MainWindow(QMainWindow):
                             outcome=PanicSessionOutcome.ABANDONED.value,
                         )
                     except Exception:
-                        pass
+                        traceback.print_exc()
             super().closeEvent(event)
             return
 

@@ -33,7 +33,9 @@ def already_running():
     try:
         s.bind(("127.0.0.1", 65432))
         return False
-    except:
+    except Exception:
+        import traceback
+        traceback.print_exc()
         return True
 
 
@@ -196,6 +198,8 @@ def load_belief_scripture_config():
         with CONFIG_PATH.open("r", encoding="utf-8") as f:
             return normalize_belief_config(json.load(f))
     except Exception:
+        import traceback
+        traceback.print_exc()
         return default_belief_scripture_map()
 
 
@@ -595,6 +599,8 @@ def show_popup(is_long_break):
                 hwnds = _enum_windows_for_pids(chrome_pids)
                 disabled_chrome_hwnds = disable_windows(hwnds)
         except Exception:
+            import traceback
+            traceback.print_exc()
             disabled_chrome_hwnds = []
 
     root = tk.Tk()
@@ -885,7 +891,8 @@ def show_popup(is_long_break):
             try:
                 enable_windows(disabled_chrome_hwnds)
             except Exception:
-                pass
+                import traceback
+                traceback.print_exc()
 
 
 # -----------------------------

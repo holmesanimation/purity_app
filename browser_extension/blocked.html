@@ -106,9 +106,10 @@
         color: var(--accent);
       }
 
-      #query-block { display: none; }
-      #query-warn  { display: none; }
-      #url-block   { display: none; }
+      #query-block      { display: none; }
+      #query-warn       { display: none; }
+      #url-block        { display: none; }
+      #blacklisted-block { display: none; }
 
       .actions {
         display: flex;
@@ -174,14 +175,22 @@
           <button id="warn-proceed-btn" type="button" style="background:transparent;border:1px solid var(--border)">Search anyway</button>
         </div>
       </div>
-      <!-- URL whitelist block mode (default) -->
+      <!-- URL blacklist block mode -->
+      <div id="blacklisted-block">
+        <h1>This URL is blocked.</h1>
+        <p>This site is on your blacklist and cannot be accessed.</p>
+        <div class="url" id="blacklisted-url"></div>
+        <div class="actions">
+          <button id="blacklisted-back-btn" type="button">Go back</button>
+        </div>
+      </div>
+      <!-- No active session (default fallback) -->
       <div id="url-block">
-        <h1>This URL was not whitelisted for this session. Are you sure?</h1>
-        <p>Choosing Yes adds it to the current Purity browsing session immediately.</p>
+        <h1>No active browsing session.</h1>
+        <p>Start a Purity browsing session before opening the browser.</p>
         <div class="url" id="blocked-url"></div>
         <div class="actions">
-          <button id="yes-btn" type="button">Yes</button>
-          <button id="no-btn" type="button">No</button>
+          <button id="no-session-back-btn" type="button">Go back</button>
         </div>
       </div>
     </main>

@@ -152,3 +152,33 @@ function handleClassifyMessage(request, sendResponse) {
   });
   return true; // Keep the message channel open for async response.
 }
+
+/**
+ * Scan page body text against only weight-100 hard_block phrases.
+ * Used by content.js to warn when a page's visible text contains a hard phrase.
+ * @param {string} text  Page body text (caller should cap length before sending).
+ * @returns {Promise<{found: boolean, matches: Array<{phrase: string, weight: number}>}>}
+ */
+async function classifyPageContent(text) {
+  if (!phraseConfig) {
+    await loadConfig();
+  }
+  const config = phraseConfig || EMERGENCY_DEFAULTS;
+  const weight100Only = config.hard_block.filter(e => e.weight === 100);
+  const normalizedText = normalize(text);
+  const matches = matchPhrases(normalizedText, weight100Only);
+  return { found: matches.length > 0, matches };
+}
+
+/**
+ * Message handler for { type: 'classify_page_content' } messages.
+ * @param {{text: string}} request
+ * @param {function} sendResponse
+ * @returns {true}
+ */
+function handleClassifyPageContentMessage(request, sendResponse) {
+  classifyPageContent(request.text).then(result => {
+    sendResponse(result);
+  });
+  return true;
+}

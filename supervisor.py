@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import traceback
 import os
 import signal
 import sys
@@ -153,7 +154,7 @@ def main() -> int:
         try:
             purity_app_cmd = json.loads(args.purity_app_cmd)
         except Exception:
-            pass
+            traceback.print_exc()
 
     # --- Own heartbeat (daemon thread, clears exit marker on start) ----------
     heartbeat_writer = HeartbeatWriter(

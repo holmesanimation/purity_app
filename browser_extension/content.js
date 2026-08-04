@@ -35,17 +35,6 @@
 
   // ── Re-submission helper ──────────────────────────────────────────────────────
 
-  /**
-   * Submit the form containing el without re-triggering the submit event.
-   * form.submit() is a native DOM call that bypasses all event listeners.
-   */
-  function resubmitEl(el) {
-    const form = el.closest('form');
-    if (form) {
-      form.submit();
-    }
-  }
-
   // ── Classification ────────────────────────────────────────────────────────────
 
   /**
@@ -111,17 +100,6 @@
    * @param {Element} el
    */
   function interceptSubmission(el) {
-    // Form submit interception (catches Enter on plain text inputs too).
-    const form = el.closest('form');
-    if (form && !form.dataset.purityFormGuarded) {
-      form.dataset.purityFormGuarded = '1';
-      form.addEventListener('submit', (evt) => {
-        evt.preventDefault(); // Block SYNCHRONOUSLY before async work.
-        const text = extractText(el);
-        sendForClassification(text, () => resubmitEl(el));
-      }, true); // Capture phase: runs before page JS.
-    }
-
     // Enter-key interception for search/combobox inputs whose submit may be
     // handled by page JS rather than a native form submission.
     const isSearchLike =
@@ -192,10 +170,47 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
+  // ── Page content scan ────────────────────────────────────────────────────────
+
+  /**
+   * One-time scan of the page's visible text against weight-100 hard_block phrases.
+   * If a match is found, shows a content-warning overlay with go-back / proceed options.
+   * Capped at 100 000 characters to avoid sending enormous strings to the service worker.
+   */
+  const PAGE_SCAN_CHAR_LIMIT = 100000;
+  let pageScanDone = false;
+
+  function scanPageContent() {
+    if (pageScanDone) return;
+    pageScanDone = true;
+
+    const text = (document.body?.innerText || '').slice(0, PAGE_SCAN_CHAR_LIMIT);
+    if (!text || text.trim().length < 3) return;
+
+    chrome.runtime.sendMessage(
+      { type: 'classify_page_content', text },
+      (response) => {
+        if (chrome.runtime.lastError) return;
+        if (!response || !response.found || !response.matches.length) return;
+
+        const firstMatch = response.matches[0].phrase;
+        window.PurityApp.showPageContentWarning(
+          firstMatch,
+          () => { window.history.back(); },
+          () => {} // proceed: close overlay and stay on page
+        );
+      }
+    );
+  }
+
   // Start monitoring once the DOM is available.
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', observeInputs);
+    document.addEventListener('DOMContentLoaded', () => {
+      observeInputs();
+      scanPageContent();
+    });
   } else {
     observeInputs();
+    scanPageContent();
   }
 }());

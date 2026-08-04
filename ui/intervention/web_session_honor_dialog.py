@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import random
 from typing import Callable, Optional
 
-_GOD_ADJECTIVES = [
-    "Great", "Beautiful", "Kind", "Gracious", "Thoughtful", "Wise", "Pure", "Loving"
-]
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import QColor, QPainter, QScreen
@@ -32,7 +28,7 @@ from styles.theme import (
 )
 
 _FS_REASON_TITLE = 11
-_FS_REASON_TEXT = 13
+_FS_REASON_TEXT = 15
 _FS_QUESTION = 16
 _FS_GOD_IS_GREAT = 38
 _FS_REACH_OUT = 14
@@ -100,13 +96,16 @@ class WebSessionHonorDialog(QDialog):
 
         # ── Reason label ──────────────────────────────────────────────
         self._reason_title_lbl = QLabel("Your reason for going online:")
+        self._reason_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._reason_title_lbl.setStyleSheet(
             f"color: {COLOR_TEXT_MUTED}; font-family: '{FONT_FAMILY}';"
             f"font-size: {_FS_REASON_TITLE}pt; background: transparent;"
         )
         root.addWidget(self._reason_title_lbl)
 
-        self._reason_lbl = QLabel(reason or "(no reason recorded)")
+        _reason_text = reason or "(no reason recorded)"
+        self._reason_lbl = QLabel(f"\u201c{_reason_text}\u201d")
+        self._reason_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._reason_lbl.setWordWrap(True)
         self._reason_lbl.setStyleSheet(
             f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
@@ -116,13 +115,67 @@ class WebSessionHonorDialog(QDialog):
 
         root.addSpacing(6)
 
-        # ── Question ─────────────────────────────────────────────────
+        # ── Q1: Did you stick to your plan? (initially visible) ─────────
+        self._q1_answer: Optional[bool] = None
+
+        self._q1_lbl = QLabel("Did you stick to your plan?")
+        self._q1_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._q1_lbl.setStyleSheet(
+            f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
+            f"font-size: {_FS_QUESTION}pt; font-weight: 700; background: transparent;"
+        )
+        root.addWidget(self._q1_lbl)
+
+        root.addSpacing(4)
+
+        self._q1_btn_row_widget = QWidget()
+        self._q1_btn_row_widget.setStyleSheet("background: transparent;")
+        q1_btn_row = QHBoxLayout(self._q1_btn_row_widget)
+        q1_btn_row.setContentsMargins(0, 0, 0, 0)
+        q1_btn_row.setSpacing(16)
+
+        _q1_yes_btn = QPushButton("Yes")
+        _q1_yes_btn.setMinimumHeight(44)
+        _q1_yes_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: #2e7d32;"
+            f"  color: #ffffff;"
+            f"  border: none; border-radius: 8px;"
+            f"  font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt; font-weight: 700;"
+            f"  padding: 8px 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #388e3c; }}"
+        )
+        _q1_yes_btn.clicked.connect(self._on_q1_yes)
+
+        _q1_no_btn = QPushButton("No")
+        _q1_no_btn.setMinimumHeight(44)
+        _q1_no_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  background-color: #c62828;"
+            f"  color: #ffffff;"
+            f"  border: none; border-radius: 8px;"
+            f"  font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt; font-weight: 700;"
+            f"  padding: 8px 24px;"
+            f"}}"
+            f"QPushButton:hover {{ background-color: #d32f2f; }}"
+        )
+        _q1_no_btn.clicked.connect(self._on_q1_no)
+
+        q1_btn_row.addStretch()
+        q1_btn_row.addWidget(_q1_yes_btn)
+        q1_btn_row.addWidget(_q1_no_btn)
+        q1_btn_row.addStretch()
+        root.addWidget(self._q1_btn_row_widget)
+
+        # ── Q2: Did you honor Jesus online? (initially hidden) ────────
         self._question_lbl = QLabel("Did you honor Jesus online?")
         self._question_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._question_lbl.setStyleSheet(
             f"color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
             f"font-size: {_FS_QUESTION}pt; font-weight: 700; background: transparent;"
         )
+        self._question_lbl.hide()
         root.addWidget(self._question_lbl)
 
         root.addSpacing(4)
@@ -166,10 +219,11 @@ class WebSessionHonorDialog(QDialog):
         btn_row.addWidget(self._yes_btn)
         btn_row.addWidget(self._no_btn)
         btn_row.addStretch()
+        self._btn_row_widget.hide()
         root.addWidget(self._btn_row_widget)
 
         # ── "God is …!" label (hidden until Yes) ─────────────────
-        self._god_great_lbl = QLabel(f"God is {random.choice(_GOD_ADJECTIVES)}!")
+        self._god_great_lbl = QLabel("Thank you Jesus!")
         self._god_great_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._god_great_lbl.setStyleSheet(
             f"color: #2e7d32; font-family: '{FONT_FAMILY}';"
@@ -275,33 +329,52 @@ class WebSessionHonorDialog(QDialog):
     # Button handlers
     # ------------------------------------------------------------------
 
-    def _on_yes(self) -> None:
-        # Hide everything except the God is … label
-        self._reason_title_lbl.hide()
+    def _on_q1_yes(self) -> None:
+        self._q1_answer = True
+        self._q1_lbl.hide()
+        self._q1_btn_row_widget.hide()
         self._reason_lbl.hide()
-        self._question_lbl.hide()
-        self._btn_row_widget.hide()
-        self._reach_out_widget.hide()
-
-        # Resize to a compact square so the label fills it
-        self.setFixedSize(480, 200)
-        self._god_great_lbl.setAlignment(
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
-        )
-        self._god_great_lbl.show()
+        self._reason_title_lbl.hide()
+        self._question_lbl.show()
+        self._btn_row_widget.show()
+        self.adjustSize()
         self._center_on_screen()
 
-        opacity_effect = QGraphicsOpacityEffect(self._god_great_lbl)
-        opacity_effect.setOpacity(1.0)
-        self._god_great_lbl.setGraphicsEffect(opacity_effect)
+    def _on_q1_no(self) -> None:
+        self._q1_answer = False
+        self._q1_lbl.hide()
+        self._q1_btn_row_widget.hide()
+        self._question_lbl.show()
+        self._btn_row_widget.show()
+        self.adjustSize()
+        self._center_on_screen()
 
-        self._fade_anim = QPropertyAnimation(opacity_effect, b"opacity", self)
-        self._fade_anim.setDuration(1_000)
-        self._fade_anim.setStartValue(1.0)
-        self._fade_anim.setEndValue(0.0)
-        self._fade_anim.setEasingCurve(QEasingCurve.Type.InQuad)
-        self._fade_anim.finished.connect(self.accept)
-        QTimer.singleShot(2_000, self._fade_anim.start)
+    def _on_yes(self) -> None:
+        self._question_lbl.hide()
+        self._btn_row_widget.hide()
+        if self._q1_answer is True:
+            # Both questions Yes — show "Thank you Jesus!"
+            self._reason_title_lbl.hide()
+            self._reason_lbl.hide()
+            self._reach_out_widget.hide()
+            self.setFixedSize(480, 200)
+            self._god_great_lbl.setAlignment(
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            self._god_great_lbl.show()
+            self._center_on_screen()
+            opacity_effect = QGraphicsOpacityEffect(self._god_great_lbl)
+            opacity_effect.setOpacity(1.0)
+            self._god_great_lbl.setGraphicsEffect(opacity_effect)
+            self._fade_anim = QPropertyAnimation(opacity_effect, b"opacity", self)
+            self._fade_anim.setDuration(1_000)
+            self._fade_anim.setStartValue(1.0)
+            self._fade_anim.setEndValue(0.0)
+            self._fade_anim.setEasingCurve(QEasingCurve.Type.InQuad)
+            self._fade_anim.finished.connect(self.accept)
+            QTimer.singleShot(2_000, self._fade_anim.start)
+        else:
+            self.accept()
 
     def _on_no(self) -> None:
         self._btn_row_widget.hide()

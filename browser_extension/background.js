@@ -14,15 +14,17 @@ void loadConfig().then(async () => {
 });
 
 const SESSION_URL = "http://127.0.0.1:8765/browser-session";
-const ALLOW_URL = "http://127.0.0.1:8765/browser-session/allow";
+const INTERNET_SETTINGS_URL = "http://127.0.0.1:8765/internet-settings";
 const HEARTBEAT_URL = "http://127.0.0.1:8765/extension-heartbeat";
 const POLL_MS = 3000;
+const BLACKLIST_POLL_MS = 30000;
 const BLOCK_RULE_ID = 1;
-const ALLOW_RULE_START = 100;
+const LOCALHOST_ALLOW_RULE_ID = 2;
 const HEARTBEAT_ALARM = "purity-extension-heartbeat";
 const HEARTBEAT_PERIOD_MINUTES = 0.5;
 
 let currentSession = { is_active: false };
+let blacklistedDomains = [];
 const blockedByTabId = new Map();
 let ruleUpdateChain = Promise.resolve();
 
@@ -57,6 +59,19 @@ function scheduleHeartbeatAlarm() {
   chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_PERIOD_MINUTES });
 }
 
+// priority 2 beats the block rule (priority 1); RE2 has no lookahead so a separate allow rule is required
+function buildLocalhostAllowRule() {
+  return {
+    id: LOCALHOST_ALLOW_RULE_ID,
+    priority: 2,
+    action: { type: "allow" },
+    condition: {
+      regexFilter: "^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?(/|$)",
+      resourceTypes: ["main_frame"]
+    }
+  };
+}
+
 function buildBlockRule() {
   return {
     id: BLOCK_RULE_ID,
@@ -88,6 +103,19 @@ async function fetchSession() {
   }
 }
 
+async function fetchBlacklist() {
+  try {
+    const response = await fetch(INTERNET_SETTINGS_URL, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (Array.isArray(data?.blacklisted_domains)) {
+      blacklistedDomains = data.blacklisted_domains.map(d => String(d).toLowerCase());
+    }
+  } catch {
+    // Server not reachable — keep existing cached list.
+  }
+}
+
 function normalizeUrl(url) {
   try {
     return new URL(url).toString();
@@ -97,22 +125,11 @@ function normalizeUrl(url) {
 }
 
 function buildRules(session) {
-  const rules = [buildBlockRule()];
-
-  let nextId = ALLOW_RULE_START;
-  for (const domain of session.allowed_domains || []) {
-    rules.push({
-      id: nextId++,
-      priority: 20,
-      action: { type: "allow" },
-      condition: {
-        // requestDomains matches the exact domain and all subdomains without regex.
-        requestDomains: [domain],
-        resourceTypes: ["main_frame"]
-      }
-    });
+  // localhost is always reachable (dev servers, local tools) regardless of session state.
+  const rules = [buildLocalhostAllowRule()];
+  if (!session.is_active) {
+    rules.push(buildBlockRule());
   }
-
   return rules;
 }
 
@@ -126,10 +143,6 @@ async function replaceRules(rules) {
 
 async function syncRulesFromSession() {
   currentSession = await fetchSession();
-  if (!currentSession.is_active) {
-    await replaceRules([buildBlockRule()]);
-    return;
-  }
   await replaceRules(buildRules(currentSession));
 }
 
@@ -140,26 +153,11 @@ function updateFromSession() {
   return ruleUpdateChain;
 }
 
-function isAllowedHostname(hostname, allowedDomains) {
+function isBlacklistedHostname(hostname) {
   const host = (hostname || "").toLowerCase();
-  return (allowedDomains || []).some(
+  return blacklistedDomains.some(
     (domain) => host === domain || host.endsWith("." + domain)
   );
-}
-
-function isBlockedCandidate(url) {
-  if (!currentSession.is_active) {
-    return false;
-  }
-  if (!/^https?:/i.test(url || "")) {
-    return false;
-  }
-  try {
-    const hostname = new URL(url).hostname;
-    return !isAllowedHostname(hostname, currentSession.allowed_domains);
-  } catch {
-    return true;
-  }
 }
 
 function isGoogleImages(urlString) {
@@ -243,19 +241,33 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     chrome.tabs.update(details.tabId, { url: warningUrl });
     return;
   }
-  if (isBlockedCandidate(details.url)) {
-    blockedByTabId.set(details.tabId, normalizeUrl(details.url));
+  // Blacklist check — applies whenever a session is active.
+  if (currentSession.is_active && blacklistedDomains.length > 0) {
+    try {
+      const hostname = new URL(details.url).hostname;
+      if (isBlacklistedHostname(hostname)) {
+        chrome.tabs.update(details.tabId, {
+          url: chrome.runtime.getURL("blocked.html")
+            + "#reason=blacklisted&url=" + encodeURIComponent(details.url)
+        });
+        return;
+      }
+    } catch {
+      // Invalid URL — let it pass through.
+    }
   }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
   scheduleHeartbeatAlarm();
   void sendHeartbeat();
+  void fetchBlacklist();
   void updateFromSession();
 });
 chrome.runtime.onStartup.addListener(() => {
   scheduleHeartbeatAlarm();
   void sendHeartbeat();
+  void fetchBlacklist();
   void updateFromSession();
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -265,10 +277,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 scheduleHeartbeatAlarm();
 void sendHeartbeat();
+void fetchBlacklist();
 void updateFromSession();
 setInterval(() => {
   void updateFromSession();
 }, POLL_MS);
+setInterval(() => {
+  void fetchBlacklist();
+}, BLACKLIST_POLL_MS);
 
 async function logDetection({ level, score, matches, url }) {
   if (level === 'SAFE') return;
@@ -298,45 +314,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "classify_page_content") {
+    handleClassifyPageContentMessage(message, (result) => {
+      sendResponse(result);
+    });
+    return true;
+  }
+
   if (message?.type === "get-blocked-url") {
     sendResponse({ url: blockedByTabId.get(sender.tab?.id) || "" });
     return;
-  }
-
-  if (message?.type === "allow-blocked-url") {
-    const blockedUrl = message.url || blockedByTabId.get(sender.tab?.id);
-    if (!blockedUrl) {
-      sendResponse({ ok: false });
-      return;
-    }
-
-    fetch(ALLOW_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: blockedUrl })
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error("allow failed");
-        }
-        const payload = await response.json();
-        const allowedDomains = Array.isArray(payload?.allowed_domains) ? payload.allowed_domains : [];
-        let blockedHostname = "";
-        try { blockedHostname = new URL(blockedUrl).hostname; } catch {}
-        if (!payload?.is_active || !blockedHostname || !allowedDomains.includes(blockedHostname)) {
-          throw new Error("allow rejected");
-        }
-        await sendHeartbeat();
-        await updateFromSession();
-        const tabId = sender.tab?.id;
-        if (typeof tabId === "number") {
-          blockedByTabId.delete(tabId);
-          await chrome.tabs.update(tabId, { url: blockedUrl });
-        }
-        sendResponse({ ok: true });
-      })
-      .catch(() => sendResponse({ ok: false }));
-
-    return true;
   }
 });

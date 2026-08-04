@@ -30,6 +30,12 @@
         font-family: Georgia, "Palatino Linotype", serif;
       }
 
+      .purity-overlay-backdrop-blur {
+        background: rgba(0, 0, 0, 0.82);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+      }
+
       .purity-overlay-card {
         width: min(520px, calc(100vw - 32px));
         padding: 28px 32px;
@@ -171,13 +177,15 @@
     'anything worthy of praise, think about these things.\u201d';
   const SCRIPTURE_CITE = '\u2014 Philippians 4:8';
 
-  function buildCard({ badgeClass, titleClass, badgeText, titleText, bodyText, showDismiss, onDismiss, onProceed }) {
+  function buildCard({ badgeClass, titleClass, badgeText, titleText, bodyText, showDismiss, onDismiss, onProceed, dismissText = 'I choose better', proceedText = 'Search anyway', backdropBlur = false }) {
     injectCSS();
     removeOverlay();
 
     const backdrop = document.createElement('div');
     backdrop.id = 'purity-overlay-root';
-    backdrop.className = 'purity-overlay-backdrop';
+    backdrop.className = backdropBlur
+      ? 'purity-overlay-backdrop purity-overlay-backdrop-blur'
+      : 'purity-overlay-backdrop';
 
     const card = document.createElement('div');
     card.className = 'purity-overlay-card';
@@ -217,7 +225,7 @@
     if (showDismiss) {
       const btn = document.createElement('button');
       btn.className = 'purity-overlay-dismiss';
-      btn.textContent = 'I choose better';
+      btn.textContent = dismissText;
       btn.addEventListener('click', () => {
         removeOverlay();
         if (typeof onDismiss === 'function') onDismiss();
@@ -227,7 +235,7 @@
       if (typeof onProceed === 'function') {
         const proceedBtn = document.createElement('button');
         proceedBtn.className = 'purity-overlay-proceed';
-        proceedBtn.textContent = 'Search anyway';
+        proceedBtn.textContent = proceedText;
         proceedBtn.addEventListener('click', () => {
           removeOverlay();
           onProceed();
@@ -280,6 +288,29 @@
       if (typeof window.PurityApp.onHardBlock === 'function') {
         window.PurityApp.onHardBlock(matchedText);
       }
+    },
+
+    /**
+     * Show a page-content warning overlay when a weight-100 hard_block phrase is
+     * found in the visible text of a page. Offers "Go back" or "Stay on page".
+     * @param {string} firstMatch   The flagged phrase that was detected.
+     * @param {function} onDismiss  Called when the user chooses to go back.
+     * @param {function} onProceed  Called when the user chooses to stay.
+     */
+    showPageContentWarning(firstMatch, onDismiss, onProceed) {
+      buildCard({
+        badgeClass: 'purity-overlay-badge-warn',
+        titleClass: 'purity-overlay-title-warn',
+        badgeText: 'Content Warning',
+        titleText: 'This page contains flagged content',
+        bodyText: 'This page contains the word \u201c' + firstMatch + '\u201d, which may lead somewhere you don\u2019t want to go.',
+        showDismiss: true,
+        onDismiss,
+        onProceed: onProceed || null,
+        dismissText: 'Go back',
+        proceedText: 'Stay on page',
+        backdropBlur: true
+      });
     },
 
     removeOverlay,

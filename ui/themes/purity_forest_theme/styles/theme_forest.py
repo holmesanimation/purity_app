@@ -343,9 +343,9 @@ QProgressBar::chunk {{
 
 /* ── Tooltips ── */
 QToolTip {{
-    background-color: {COLOR_ACCENT_DARK};
-    color: #FFFFFF;
-    border: 1px solid {COLOR_ACCENT_LIGHT};
+    background-color: {COLOR_SURFACE};
+    color: {COLOR_TEXT};
+    border: 1px solid {COLOR_ACCENT};
     border-radius: 6px;
     padding: 6px;
 }}

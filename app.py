@@ -11,6 +11,7 @@ import sys
 import os
 import subprocess
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from shane_common.preferences.manager import SettingsManager
@@ -120,6 +121,7 @@ def _try_acquire_singleton_mutex() -> bool:
             return True
         return True  # CreateMutexW returned NULL — unusual, fail open
     except Exception:
+        traceback.print_exc()
         return True  # fail open
 
 
@@ -197,10 +199,7 @@ def _taskkill_pid(pid: int) -> bool:
             timeout=10,
         )
     except Exception:
-        return False
-    return not _is_pid_running(pid)
-
-
+        traceback.print_exc()
 def _find_running_instance(data_root):
     from services.supervisor_client import PuritySupervisorClient
 
@@ -910,7 +909,7 @@ class MainWindow(QMainWindow):
             try:
                 session.close(PanicSessionOutcome.ABANDONED)
             except Exception:
-                pass
+                traceback.print_exc()
             if self._runtime is not None:
                 try:
                     emit_panic_closed(
@@ -919,7 +918,7 @@ class MainWindow(QMainWindow):
                         outcome=PanicSessionOutcome.ABANDONED.value,
                     )
                 except Exception:
-                    pass
+                    traceback.print_exc()
             self._active_panic_session = None
             self._active_panic_window = None
             return
@@ -931,7 +930,7 @@ class MainWindow(QMainWindow):
             try:
                 stats.record_reasons(session.selected_reason_ids)
             except Exception:
-                pass
+                traceback.print_exc()
         if self._runtime is not None:
             from services.journal_events import emit_panic_reasons_selected
             emit_panic_reasons_selected(
@@ -1150,7 +1149,7 @@ class MainWindow(QMainWindow):
                     mgr = build_purity_settings_manager()
                 timeout = get_web_session_timeout_seconds(mgr)
             except Exception:
-                pass
+                traceback.print_exc()
         self._web_timer_pill.set_timeout(timeout)
         self._web_timer_pill.start_session()
 
@@ -1376,7 +1375,7 @@ class MainWindow(QMainWindow):
                 try:
                     self._active_panic_session.close(PanicSessionOutcome.ABANDONED)
                 except Exception:
-                    pass
+                    traceback.print_exc()
                 if self._runtime is not None:
                     try:
                         emit_panic_closed(
@@ -1385,7 +1384,7 @@ class MainWindow(QMainWindow):
                             outcome=PanicSessionOutcome.ABANDONED.value,
                         )
                     except Exception:
-                        pass
+                        traceback.print_exc()
             super().closeEvent(event)
             return
 
@@ -1444,9 +1443,12 @@ def main():
     browser_session_manager.clear_session()
     extension_heartbeat_monitor = ExtensionHeartbeatMonitor(data_root, stale_after_seconds=35.0)
     extension_heartbeat_monitor.clear()
+    from services.internet_settings import InternetSettingsService
+    internet_settings_service = InternetSettingsService(data_root)
     browser_session_api_server = BrowserSessionApiServer(
         browser_session_manager,
         extension_heartbeat_monitor,
+        internet_settings_service=internet_settings_service,
     )
     browser_session_api_server.start()
     restart_requested = {"value": False}
@@ -1465,6 +1467,7 @@ def main():
         settings_manager=settings_manager,
         browser_session_manager=browser_session_manager,
         extension_heartbeat_monitor=extension_heartbeat_monitor,
+        internet_settings_service=internet_settings_service,
     )
     window.show()
 
@@ -1512,7 +1515,7 @@ def main():
                 kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
                 kernel32.CloseHandle(_singleton_mutex_handle)
             except Exception:
-                pass
+                traceback.print_exc()  # best-effort OS cleanup; continue shutdown regardless
             _singleton_mutex_handle = None
 
     def _request_reload() -> None:
@@ -1535,6 +1538,7 @@ def main():
         data_root,
         main_window=window,
         reload_fn=_request_reload,
+        panic_button=window._panic_btn,
     )
     purity_tray.start()
     window.attach_tray_app(purity_tray)

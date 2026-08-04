@@ -35,7 +35,9 @@ function expandPhrases(phraseList) {
     if (!entry.expand) {
       if (!seen.has(entry.phrase)) {
         seen.add(entry.phrase);
-        expanded.push({ phrase: entry.phrase, weight: entry.weight });
+        const item = { phrase: entry.phrase, weight: entry.weight };
+        if (entry.whole_word) item.whole_word = true;
+        expanded.push(item);
       }
       continue;
     }
@@ -51,7 +53,9 @@ function expandPhrases(phraseList) {
       const norm = v.toLowerCase().trim();
       if (norm && !seen.has(norm)) {
         seen.add(norm);
-        expanded.push({ phrase: norm, weight: entry.weight });
+        const item = { phrase: norm, weight: entry.weight };
+        if (entry.whole_word) item.whole_word = true;
+        expanded.push(item);
       }
     }
   }
@@ -59,17 +63,25 @@ function expandPhrases(phraseList) {
 }
 
 /**
- * Return every entry from phraseList whose phrase is a substring of normalizedText.
- * Multiple matches are returned — all matched phrases are included.
+ * Return every entry from phraseList whose phrase is found in normalizedText.
+ * If an entry has `whole_word: true`, the phrase must match at a word boundary
+ * (i.e. cannot be embedded inside another word like "click" containing "lick").
+ * Otherwise plain substring matching is used.
  * @param {string} normalizedText
- * @param {Array<{phrase: string, weight: number}>} phraseList
+ * @param {Array<{phrase: string, weight: number, whole_word?: boolean}>} phraseList
  * @returns {Array<{phrase: string, weight: number}>}
  *
  * // FUTURE: regex pattern support — add phraseEntry.regex field, test with RegExp(phraseEntry.regex)
  * // FUTURE: phrase groups — accumulate weight once per group, not per phrase
  */
 function matchPhrases(normalizedText, phraseList) {
-  return phraseList.filter(entry => normalizedText.includes(entry.phrase));
+  return phraseList.filter(entry => {
+    if (entry.whole_word) {
+      const escaped = entry.phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp('\\b' + escaped + '\\b').test(normalizedText);
+    }
+    return normalizedText.includes(entry.phrase);
+  });
 }
 
 /**

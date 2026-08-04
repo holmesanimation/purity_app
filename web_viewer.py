@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +60,7 @@ def _is_app_running() -> bool:
             return True
         return False
     except Exception:
+        traceback.print_exc()
         return False
 
 

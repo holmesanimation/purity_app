@@ -9,6 +9,7 @@ import copy
 from pathlib import Path
 import os
 import subprocess
+import traceback
 from PIL import Image, ImageDraw
 
 from shane_common.config.json_config import JsonConfigStore
@@ -572,6 +573,7 @@ def show_popup(is_long_break):
                 hwnds = _enum_windows_for_pids(chrome_pids)
                 disabled_chrome_hwnds = disable_windows(hwnds)
         except Exception:
+            traceback.print_exc()
             disabled_chrome_hwnds = []
 
     root = tk.Tk()
@@ -862,7 +864,7 @@ def show_popup(is_long_break):
             try:
                 enable_windows(disabled_chrome_hwnds)
             except Exception:
-                pass
+                traceback.print_exc()
 
 
 def trigger_focus_popup(is_long_break=False):
