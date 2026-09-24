@@ -44,6 +44,16 @@ def make_pulse_reach_out_event(
     )
 
 
+def make_hard_block_alert_event() -> NotificationEvent:
+    return NotificationEvent(
+        ts=time.time(),
+        severity=NotificationSeverity.WARNING,
+        kind="browser.hard_block",
+        scope="global",
+        details="Shane has typed one of his hard blocked sexual phrases into his browser",
+    )
+
+
 def make_web_session_reach_out_event(*, reason: str) -> NotificationEvent:
     lines = [
         "Shane closed a browser session and indicated he did not honor Jesus online.",

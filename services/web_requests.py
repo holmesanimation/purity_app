@@ -27,6 +27,27 @@ APPROVED_MARKER = Path(tempfile.gettempdir()) / "purity_web_approved"
 REQUEST_SCHEMA_VERSION = 1
 _SLOW_REQUEST_IO_THRESHOLD_MS = 25.0
 
+# Runs inside a freshly-spawned console process (via -c) in debug mode: launches
+# the real app with piped stdout/stderr, then tees each line to the console
+# (inherited) and to the same log files non-debug mode writes directly to.
+_TEE_HELPER_TEMPLATE = """
+import subprocess, sys, threading
+
+def _pump(stream, out, log_path):
+    with open(log_path, "a", encoding="utf-8") as f:
+        for line in iter(stream.readline, b""):
+            text = line.decode(errors="replace")
+            out.write(text); out.flush()
+            f.write(text); f.flush()
+
+proc = subprocess.Popen({inner_cmd}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+t_out = threading.Thread(target=_pump, args=(proc.stdout, sys.stdout, {stdout_log}), daemon=True)
+t_err = threading.Thread(target=_pump, args=(proc.stderr, sys.stderr, {stderr_log}), daemon=True)
+t_out.start(); t_err.start()
+proc.wait()
+t_out.join(); t_err.join()
+"""
+
 
 def resolve_data_root() -> Path:
     return Path(os.environ.get("PURITY_DATA_ROOT", Path.home() / ".purity"))
@@ -331,21 +352,64 @@ def is_purity_app_running(data_root: Path) -> bool:
 def start_purity_app(data_root: Path | None = None) -> None:
     data_root = Path(data_root) if data_root is not None else resolve_data_root()
     app_path = Path(__file__).resolve().parent.parent / "app.py"
-    pythonw = Path(sys_executable()).with_name("pythonw.exe")
-    executable = str(pythonw if pythonw.exists() else Path(sys_executable()))
+
+    from services.settings_schemas import build_purity_settings_manager, get_debug_mode_enabled
+
+    # Pinned to the venv that has PySide6 + dropbox installed, rather than
+    # whatever interpreter happens to run this process (which previously
+    # baked a broken system Python into launcher-spawned app starts).
+    required_venv_dir = Path(r"D:\code\git\.venv\Scripts")
+    debug_mode = get_debug_mode_enabled(build_purity_settings_manager())
+    if debug_mode:
+        pinned = required_venv_dir / "python.exe"
+        executable = str(pinned if pinned.exists() else Path(sys_executable()).with_name("python.exe"))
+    else:
+        pinned = required_venv_dir / "pythonw.exe"
+        if pinned.exists():
+            executable = str(pinned)
+        else:
+            pythonw = Path(sys_executable()).with_name("pythonw.exe")
+            executable = str(pythonw if pythonw.exists() else Path(sys_executable()))
     env = dict(os.environ)
+    # Drop any PYTHONPATH/VIRTUAL_ENV inherited from the launching shell (e.g. a
+    # dev terminal that activated a different repo's venv) so the relaunched
+    # app always resolves shane_common from the pinned venv, not a shadowed copy.
+    env.pop("PYTHONPATH", None)
+    env.pop("VIRTUAL_ENV", None)
     env["PURITY_DATA_ROOT"] = str(data_root)
     app_stdout_log_path(data_root).parent.mkdir(parents=True, exist_ok=True)
-    stdout_fh = open(app_stdout_log_path(data_root), "a", encoding="utf-8")
-    stderr_fh = open(app_stderr_log_path(data_root), "a", encoding="utf-8")
+
+    stdout_fh = stderr_fh = None
+    if debug_mode:
+        # Debug mode: run app.py under a small tee helper in a fresh visible
+        # console, so stdout/stderr are shown live AND still appended to the
+        # usual log files (mirrors the non-debug redirection below).
+        cmd = [
+            executable,
+            "-c",
+            _TEE_HELPER_TEMPLATE.format(
+                inner_cmd=repr([executable, str(app_path)]),
+                stdout_log=repr(str(app_stdout_log_path(data_root))),
+                stderr_log=repr(str(app_stderr_log_path(data_root))),
+            ),
+        ]
+        popen_kwargs: dict = {
+            "cwd": str(app_path.parent),
+            "env": env,
+            "creationflags": subprocess.CREATE_NEW_CONSOLE,
+        }
+    else:
+        cmd = [executable, str(app_path)]
+        stdout_fh = open(app_stdout_log_path(data_root), "a", encoding="utf-8")
+        stderr_fh = open(app_stderr_log_path(data_root), "a", encoding="utf-8")
+        popen_kwargs = {
+            "cwd": str(app_path.parent),
+            "env": env,
+            "stdout": stdout_fh,
+            "stderr": stderr_fh,
+        }
     try:
-        proc = subprocess.Popen(
-            [executable, str(app_path)],
-            cwd=str(app_path.parent),
-            stdout=stdout_fh,
-            stderr=stderr_fh,
-            env=env,
-        )
+        proc = subprocess.Popen(cmd, **popen_kwargs)
         append_web_request_log(
             data_root,
             "app.start_requested",
@@ -363,8 +427,10 @@ def start_purity_app(data_root: Path | None = None) -> None:
         )
         raise
     finally:
-        stdout_fh.close()
-        stderr_fh.close()
+        if stdout_fh is not None:
+            stdout_fh.close()
+        if stderr_fh is not None:
+            stderr_fh.close()
 
 
 def sys_executable() -> str:

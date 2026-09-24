@@ -2,8 +2,9 @@ function parseHash() {
   const hash = window.location.hash.slice(1); // strip leading #
   const params = new URLSearchParams(hash);
   return {
-    reason: params.get("reason") || "",
-    query:  params.get("query")  ? decodeURIComponent(params.get("query")) : "",
+    reason:  params.get("reason") || "",
+    query:   params.get("query")  ? decodeURIComponent(params.get("query")) : "",
+    matches: params.get("matches") ? decodeURIComponent(params.get("matches")) : "",
     url:    params.get("url")    ? decodeURIComponent(params.get("url"))
             // legacy format: #url=<encoded>
             : (window.location.hash.startsWith("#url=") ? decodeURIComponent(window.location.hash.slice(5)) : "")
@@ -11,12 +12,15 @@ function parseHash() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const { reason, query, url } = parseHash();
+  const { reason, query, matches, url } = parseHash();
 
   if (reason === "query-warn") {
     // Search query soft-risk warning mode
     document.getElementById("query-warn").style.display = "block";
     document.getElementById("warn-query").textContent = "\u201c" + (query || "this search") + "\u201d";
+    if (matches) {
+      document.getElementById("warn-matches").textContent = "Flagged word: " + matches;
+    }
     document.getElementById("warn-back-btn").addEventListener("click", () => {
       if (history.length > 1) { history.back(); } else { window.close(); }
     });
@@ -27,6 +31,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Search query block mode
     document.getElementById("query-block").style.display = "block";
     document.getElementById("blocked-query").textContent = "\u201c" + (query || "blocked search") + "\u201d";
+    if (matches) {
+      document.getElementById("blocked-matches").textContent = "Flagged word: " + matches;
+    }
     document.getElementById("query-back-btn").addEventListener("click", () => {
       if (history.length > 1) {
         history.back();

@@ -174,6 +174,10 @@ class BibleLibrary:
         """Return a sorted list of verse keys marked for memorization."""
         return sorted(self._memorizing)
 
+    def get_all_verse_keys(self) -> list[str]:
+        """Return a sorted list of keys for every verse with saved text."""
+        return sorted(k for k, v in self._data.items() if v.get("versions"))
+
     def random_verse_text(self) -> str | None:
         """Return a randomly chosen verse as a formatted string, or None if the library is empty."""
         import random

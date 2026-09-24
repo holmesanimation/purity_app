@@ -14,6 +14,13 @@ TASK_NAME = "PuritySupervisor"
 
 
 def _resolve_pythonw_exe() -> Path:
+    # Pinned to the venv that has PySide6 + dropbox installed, rather than
+    # whatever interpreter happens to run this installer (which previously
+    # baked a broken system Python into the scheduled task).
+    required_venv_pythonw = Path(r"D:\code\git\.venv\Scripts\pythonw.exe")
+    if required_venv_pythonw.exists():
+        return required_venv_pythonw
+
     python_exe = Path(sys.executable).resolve()
     if python_exe.name.lower() == "pythonw.exe":
         return python_exe

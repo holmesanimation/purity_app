@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 from services.bible_canon import BOOKS, BOOK_DISPLAY, CANON, normalize_ref, display_ref
 from services.bible_library import BibleLibrary
 from shane_common.ui.spellcheck_highlighter import enable_spellcheck
+from ui.verse_notes_history import VerseNotesHistoryWidget
 from styles.theme import (
     COLOR_ACCENT,
     COLOR_ACCENT_DARK,
@@ -914,6 +915,10 @@ class BibleBrowserDialog(QDialog):
         container_layout.addStretch()
         scroll.setWidget(container)
         self._page1_layout.addWidget(scroll, stretch=1)
+
+        self._notes_history = VerseNotesHistoryWidget()
+        self._notes_history.set_verse(ref_key)
+        self._page1_layout.addWidget(self._notes_history)
 
     def _on_add_version(
         self, book_key: str, chapter: int, verse: int, ref_display: str, ref_key: str

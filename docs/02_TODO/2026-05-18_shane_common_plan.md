@@ -1,6 +1,6 @@
 # 2026-05-18 Plan: Introduce shane_common
 
-Create `D:\code\git\shane_common` as a third, dependency-neutral Python package for generic infrastructure only. The first pass should not modify trading_platform files while that project is still rooted at `D:\code\git`; once the move is complete, treat `D:\code\git\trading_platform` as the repo root. Do not extract trading-specific journaling/supervisor/settings wholesale, and use `purity_app` as the initial integration target because it is smaller and currently has duplicated primitives. The recommended approach is to stand up `shane_common` with stable low-level utilities first, migrate `purity_app` behind thin adapters, and later integrate `trading_platform` one generic primitive at a time after parity tests prove behavior is unchanged.
+Create `D:\code\git_new\shane_common` as a third, dependency-neutral Python package for generic infrastructure only. The first pass should not modify trading_platform files while that project is still rooted at `D:\code\git`; once the move is complete, treat `D:\code\git_new` as the repo root that contains trading_platform. Do not extract trading-specific journaling/supervisor/settings wholesale, and use `purity_app` as the initial integration target because it is smaller and currently has duplicated primitives. The recommended approach is to stand up `shane_common` with stable low-level utilities first, migrate `purity_app` behind thin adapters, and later integrate `trading_platform` one generic primitive at a time after parity tests prove behavior is unchanged.
 
 ## Audit Findings
 - `purity_app` is a small script-style app with duplicated logic across `focus_guard.py`, `focus_guard_chrome_trigger.py`, and `reminder_dialog.py`.
@@ -10,7 +10,7 @@ Create `D:\code\git\shane_common` as a third, dependency-neutral Python package 
 - `focus_guard.py` and `focus_guard_chrome_trigger.py` look like older/alternate entrypoints that duplicate config, config persistence, logging, popup, tray, process polling, and single-instance guard logic.
 - `gui/` is empty.
 - `planning/purity_app_product_system_architecture_journal_v_1.md` already recommends a shared package direction and warns to extract only after both apps genuinely need the abstraction.
-- `D:\code\git\shane_common` now exists as the shared-package repo root.
+- `D:\code\git_new\shane_common` now exists as the shared-package repo root.
 - Reference-only `trading_platform` already has substantial local implementations: `journaling/json_safety.py`, `journaling/envelope.py`, `journaling/service.py`, `journaling/sinks/jsonl_sink.py`, `settings/manager.py`, `settings/models.py`, `notify/notify_manager.py`, `notify/contracts.py`, `supervisor/heartbeat_writer.py`, `supervisor/state_store.py`, `utils/time_utils.py`, and `utils/day_bucket.py`. These are useful evidence for overlap, but many are trading-shaped and should not be lifted wholesale.
 
 ## Proposed shane_common Structure
@@ -48,7 +48,7 @@ Create `D:\code\git\shane_common` as a third, dependency-neutral Python package 
 
 ## Migration Phases
 1. Phase 0 - Baseline audit and tests. Add lightweight characterization tests around `purity_app` pure functions before migration: belief config normalization, scripture selection behavior, expected water calculation with injectable time if practical, JSONL record shape helper if extracted locally first. Dependency: none.
-2. Phase 1 - Stand up `D:\code\git\shane_common` package. Create src-layout package, pytest, README, and pure utility modules for time, JSON safety, atomic writes, JSON config store, JSONL event writer. Dependency: Phase 0 findings, but can be built in parallel with purity tests.
+2. Phase 1 - Stand up `D:\code\git_new\shane_common` package. Create src-layout package, pytest, README, and pure utility modules for time, JSON safety, atomic writes, JSON config store, JSONL event writer. Dependency: Phase 0 findings, but can be built in parallel with purity tests.
 3. Phase 2 - Use `shane_common` in `purity_app` for persistence only. Replace `get_log_path`/`append_focus_log` with `JsonlEventWriter` or a tiny app adapter. Replace direct config JSON load/save with `JsonConfigStore` while leaving `normalize_belief_config` and domain defaults inside `purity_app`. Dependency: Phase 1.
 4. Phase 3 - Migrate process/window primitives. Move Chrome PID/window enable-disable and process-running/taskkill logic behind `shane_common.processes`. Keep Chrome policy and dialog decisions in `purity_app`. Dependency: Phase 1; can run after or parallel with Phase 2 if tests are in place.
 5. Phase 4 - Reduce duplicate entrypoints. Decide whether `focus_guard.py` and `focus_guard_chrome_trigger.py` are obsolete compatibility entrypoints or should import the same canonical modules as `app.py`/`reminder_dialog.py`. Prefer deprecating duplicates after parity is verified. Dependency: Phases 2-3.
@@ -57,16 +57,16 @@ Create `D:\code\git\shane_common` as a third, dependency-neutral Python package 
 8. Phase 7 - Later `trading_platform` integration. In a separate pass, install `shane_common` editable in `trading_platform`, then migrate one utility at a time behind compatibility wrappers. Start with JSON safety/time/atomic writes if tests pass. Leave existing trading module public APIs intact until downstream imports are updated. Dependency: no earlier than stable `shane_common` release from purity integration.
 
 ## Files Likely Touched In purity_app
-- `D:\code\git\purity_app\app.py` - Chrome watcher can use generic process polling; tray/bootstrap remains app-owned.
-- `D:\code\git\purity_app\reminder_dialog.py` - config load/save, JSONL logging, Windows Chrome window helpers, and possibly date/time helpers migrate behind common utilities; popup UI and purity-specific rules stay here initially.
-- `D:\code\git\purity_app\chrome_dialog.py` - process kill and window enable/disable can use common process/window utilities; Chrome gate UI and policy stay app-owned.
-- `D:\code\git\purity_app\focus_guard.py` - either refactor to reuse canonical modules or mark as legacy; currently duplicates much of `reminder_dialog.py` and app/tray logic.
-- `D:\code\git\purity_app\focus_guard_chrome_trigger.py` - same as `focus_guard.py`; likely legacy or alternate all-in-one entrypoint.
-- `D:\code\git\purity_app\docs\planning\purity_app_product_system_architecture_journal_v_1.md` - optionally update later with actual package decisions if implementation occurs. Do not update during plan-only work.
-- New future files likely: `D:\code\git\purity_app\requirements.txt` or `pyproject.toml` if dependency management is formalized, and local tests under `D:\code\git\purity_app\tests\`.
+- `D:\code\git_new\purity_app\app.py` - Chrome watcher can use generic process polling; tray/bootstrap remains app-owned.
+- `D:\code\git_new\purity_app\reminder_dialog.py` - config load/save, JSONL logging, Windows Chrome window helpers, and possibly date/time helpers migrate behind common utilities; popup UI and purity-specific rules stay here initially.
+- `D:\code\git_new\purity_app\chrome_dialog.py` - process kill and window enable/disable can use common process/window utilities; Chrome gate UI and policy stay app-owned.
+- `D:\code\git_new\purity_app\focus_guard.py` - either refactor to reuse canonical modules or mark as legacy; currently duplicates much of `reminder_dialog.py` and app/tray logic.
+- `D:\code\git_new\purity_app\focus_guard_chrome_trigger.py` - same as `focus_guard.py`; likely legacy or alternate all-in-one entrypoint.
+- `D:\code\git_new\purity_app\docs\planning\purity_app_product_system_architecture_journal_v_1.md` - optionally update later with actual package decisions if implementation occurs. Do not update during plan-only work.
+- New future files likely: `D:\code\git_new\purity_app\requirements.txt` or `pyproject.toml` if dependency management is formalized, and local tests under `D:\code\git_new\purity_app\tests\`.
 
 ## Later trading_platform Integration Plan
-1. Do not modify trading_platform files in the current pass. While the project is still temporarily rooted at `D:\code\git`, treat that whole tree as off-limits except for the later planned move; after the move, the repo root becomes `D:\code\git\trading_platform`.
+1. Do not modify trading_platform files in the current pass. While the project is still temporarily rooted at `D:\code\git`, treat that whole tree as off-limits except for the later planned move; after the move, the repo root becomes `D:\code\git_new`.
 2. Create a compatibility inventory: map `trading_platform.journaling.json_safety.sanitize_json`, `utils.time_utils`, `utils.day_bucket`, atomic write helpers, and notification contracts to candidate `shane_common` equivalents.
 3. Add `shane_common` as an editable/dev dependency in a dedicated trading-platform branch/pass only after `shane_common` has its own test suite and versioned API.
 4. Migrate lowest-risk utilities first: `sanitize_json`, UTC/day bucket helpers, and atomic JSON writes. Keep wrappers in existing trading modules so internal imports do not churn.
@@ -89,7 +89,7 @@ Create `D:\code\git\shane_common` as a third, dependency-neutral Python package 
 3. `purity_app` migration tests after each phase: same tests pass with common utilities; temp directories prove config/log writes do not touch the real home directory.
 4. Manual smoke tests for purity: launch app, tray menu appears, reset popup opens, countdown completes, water/vitamin gating still works, belief scripture updates while typing, log line is appended, Chrome open dialog appears, Chrome windows re-enable after close/cancel/Need/non-Need path.
 5. `trading_platform` later tests: run existing test suite unchanged after wrappers switch to `shane_common`; add golden tests for `sanitize_json`, atomic writes, JSONL sink outputs, notification event IDs, and settings/schedule persistence before swapping internals.
-6. Packaging tests: `pip install -e D:\code\git\shane_common`, import from a clean Python process, and verify both apps can import without circular dependencies.
+6. Packaging tests: `pip install -e D:\code\git_new\shane_common`, import from a clean Python process, and verify both apps can import without circular dependencies.
 
 ## Decisions
 - Start with generic infrastructure only: JSON safety, file I/O, JSON config, JSONL appenders, time helpers, process/window helpers, and simple runtime guards.

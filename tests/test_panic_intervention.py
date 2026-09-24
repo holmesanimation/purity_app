@@ -143,7 +143,7 @@ class TestStartPanicIntervention:
         assert not payload.get("is_active", False)
 
     def test_panic_started_event_emitted(self) -> None:
-        with patch(_TASKKILL_PATCH):
+        with patch(_TASKKILL_PATCH), _patched_panic_dialogs():
             self.win._start_panic_intervention()
 
         self.runtime.journal.close_sinks()
@@ -154,7 +154,7 @@ class TestStartPanicIntervention:
 
     def test_started_while_elevated_captured(self) -> None:
         self.win._panic_elevated = True
-        with patch(_TASKKILL_PATCH):
+        with patch(_TASKKILL_PATCH), _patched_panic_dialogs():
             self.win._start_panic_intervention()
 
         assert self.win._active_panic_session.started_while_elevated is True
@@ -241,23 +241,23 @@ class TestPanicReasonDialog:
 
     def test_help_me_enabled_after_selection(self) -> None:
         dlg = self._make_dialog()
-        # Check the first reason
-        first_cb = list(dlg._checkboxes.values())[0]
-        first_cb.setChecked(True)
+        # Click the first reason button
+        first_btn = list(dlg._active.values())[0]["btn"]
+        first_btn.click()
         assert dlg._help_btn.isEnabled()
 
     def test_help_me_disabled_again_when_deselected(self) -> None:
         dlg = self._make_dialog()
-        first_cb = list(dlg._checkboxes.values())[0]
-        first_cb.setChecked(True)
-        first_cb.setChecked(False)
+        first_btn = list(dlg._active.values())[0]["btn"]
+        first_btn.click()
+        first_btn.click()
         assert not dlg._help_btn.isEnabled()
 
     def test_selected_reason_ids_populated_on_accept(self) -> None:
         from ui.intervention.panic_reason_dialog import PanicReasonDialog, REASON_LABELS
         dlg = self._make_dialog()
         expected_id = REASON_LABELS[2][0]  # "tired"
-        dlg._checkboxes[expected_id].setChecked(True)
+        dlg._active[expected_id]["btn"].click()
         dlg._on_accept()
         assert dlg.selected_reason_ids == [expected_id]
 
@@ -266,7 +266,7 @@ class TestPanicReasonDialog:
         dlg = self._make_dialog()
         ids_to_select = [REASON_LABELS[0][0], REASON_LABELS[3][0]]
         for rid in ids_to_select:
-            dlg._checkboxes[rid].setChecked(True)
+            dlg._active[rid]["btn"].click()
         dlg._on_accept()
         assert set(dlg.selected_reason_ids) == set(ids_to_select)
 

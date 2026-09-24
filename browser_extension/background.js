@@ -141,9 +141,15 @@ async function replaceRules(rules) {
   });
 }
 
+// Rules only depend on session.is_active, so skip the (expensive) rule
+// replacement when the session state hasn't actually changed since last sync.
+let lastAppliedIsActive = null;
+
 async function syncRulesFromSession() {
   currentSession = await fetchSession();
+  if (currentSession.is_active === lastAppliedIsActive) return;
   await replaceRules(buildRules(currentSession));
+  lastAppliedIsActive = currentSession.is_active;
 }
 
 function updateFromSession() {
@@ -218,17 +224,21 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     await loadConfig(); // no-op if already loaded; ensures soft_risk phrases are available
     const result = classifySync(searchQuery);
     if (result.level === 'HARD_BLOCK') {
+      void logDetection({ level: result.level, score: result.score, matches: result.matches, url: details.url });
       chrome.tabs.update(details.tabId, {
         url: chrome.runtime.getURL("blocked.html")
           + "#reason=query&query=" + encodeURIComponent(searchQuery)
+          + "&matches=" + encodeURIComponent(result.matches.map(m => m.phrase).join(', '))
           + "&url=" + encodeURIComponent(details.url)
       });
       return;
     }
     if (result.level === 'SOFT_RISK') {
+      void logDetection({ level: result.level, score: result.score, matches: result.matches, url: details.url });
       chrome.tabs.update(details.tabId, {
         url: chrome.runtime.getURL("blocked.html")
           + "#reason=query-warn&query=" + encodeURIComponent(searchQuery)
+          + "&matches=" + encodeURIComponent(result.matches.map(m => m.phrase).join(', '))
           + "&url=" + encodeURIComponent(details.url)
       });
       return;

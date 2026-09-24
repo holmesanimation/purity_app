@@ -26,8 +26,10 @@ from datetime import datetime
 from pathlib import Path
 
 _HERE = Path(__file__).parent.resolve()
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
+_WORKSPACE_ROOT = _HERE.parent
+for _path in (_HERE, _WORKSPACE_ROOT, _WORKSPACE_ROOT / "shane_common" / "src"):
+    if _path.exists() and str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from services.web_requests import (  # noqa: E402
     append_web_request_log,

@@ -8,14 +8,16 @@ This module contains ``MainWindow`` and the helper utilities it relies on
 from __future__ import annotations
 
 import os
+import random
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QObject, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,15 +43,18 @@ from services.notes_setup import make_notes_writer, notes_writer, notes_repo
 from services.panic_session import PanicSession, PanicSessionOutcome, PanicSessionState
 from services.pulse_activity import UserActivityMonitor
 from services.pulse_manager import PulseManager
+from services.pulse_models import PulseSliders
 from services.pulse_notifications import (
     format_notification_details,
     make_pulse_reach_out_event,
     make_web_session_reach_out_event,
 )
+from services.streak import PurityStreak
 from services.settings_schemas import (
     build_purity_settings_manager,
     get_kill_browsers_on_startup,
     get_permitted_browsers,
+    get_prayer_recipients_per_session,
     get_web_session_timeout_seconds,
     resolve_purity_data_root,
 )
@@ -83,7 +88,6 @@ from ui.intervention.popup_manager import PopupManager
 from ui.intervention.web_popup import WebPopup
 from ui.left_dock_dashboard import LeftDockDashboard
 from ui.notes.note_dialog import NoteDialog
-from ui.pulse_dialog import PulseDialog
 from ui.notes.notes_browser_window import NotesBrowserWindow
 from ui.reflection.dashboard import ReflectionDashboard
 from ui.review.review_window import ReviewWindow
@@ -190,6 +194,22 @@ def _launch_supervisor(data_root: Path) -> None:
 # Main application window
 # ---------------------------------------------------------------------------
 
+
+class _BrowserKillWorker(QObject):
+    """Runs taskkill_processes off the UI thread (subprocess spawns are slow)."""
+
+    finished = Signal()
+
+    def __init__(self, browsers: list[str]):
+        super().__init__()
+        self._browsers = browsers
+
+    def run(self) -> None:
+        from shane_common.processes.windows import taskkill_processes
+        taskkill_processes(self._browsers)
+        self.finished.emit()
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -219,6 +239,11 @@ class MainWindow(QMainWindow):
         self._panic_last_override_count: int = 0
         self._panic_reminders = None  # initialised lazily on first use
         self._bible_library = None     # initialised lazily on first use
+        self._prayer_recipient_library = None  # initialised lazily on first use
+        self._streak = None            # initialised lazily on first use
+        self._diet_state = None        # initialised lazily on first use
+        self._streak_badge_lbl = None
+        self._prayer_tool_win = None    # lazy; opened via Tools menu
         self._encouragement_editor_win = None  # lazy; opened via Tools menu
         self._internet_settings_win = None  # lazy; opened via Tools menu
         self._internet_settings_service = internet_settings_service
@@ -235,47 +260,78 @@ class MainWindow(QMainWindow):
         self._notes_browser: NotesBrowserWindow | None = None
         self._log_viewer_win: PurityLogViewerWindow | None = None
         self._pulse_manager: PulseManager | None = None
-        self._pulse_dialog: PulseDialog | None = None
         self._pulse_notes_writer = notes_writer
 
+        # Kick off BibleLibrary's file load in the background so its I/O overlaps
+        # with _build_ui() instead of adding to it serially; joined below before use.
+        self._bible_library_load_thread: threading.Thread | None = None
+        if self._runtime is not None:
+            from services.bible_library import BibleLibrary
+
+            def _load_bible_library() -> None:
+                self._bible_library = BibleLibrary(self._runtime.data_root)
+
+            self._bible_library_load_thread = threading.Thread(
+                target=_load_bible_library, daemon=True
+            )
+            self._bible_library_load_thread.start()
+
+        _init_started_at = time.perf_counter()
+
+        def _log_init_step(step: str) -> None:
+            print(f"[MainWindow.__init__] {step} at +{(time.perf_counter() - _init_started_at) * 1000:.1f} ms", flush=True)
+
         self._apply_live_settings_from_manager()
+        _log_init_step("_apply_live_settings_from_manager done")
 
         if self._runtime is not None:
             self._pulse_notes_writer = make_notes_writer(run_id=self._runtime.session.run_id)
+        _log_init_step("make_notes_writer done")
 
         # Log normalizer sink — register before _build_ui so the sink is ready.
         self._log_sink = PurityLogNormalizerSink()
         if runtime is not None:
             runtime.journal._sinks.append(self._log_sink)
+        _log_init_step("log sink registered")
 
         self._center_on_screen()
         self._build_menu_bar()
+        _log_init_step("_build_menu_bar done")
         self._build_ui()
+        _log_init_step("_build_ui done")
 
         # Eagerly initialize BibleLibrary so the left-dock dashboard can source memorizing verses.
-        if self._bible_library is None and self._runtime is not None:
+        if self._bible_library_load_thread is not None:
+            self._bible_library_load_thread.join()
+        elif self._bible_library is None and self._runtime is not None:
             from services.bible_library import BibleLibrary
             self._bible_library = BibleLibrary(self._runtime.data_root)
+        _log_init_step("BibleLibrary loaded")
 
         # Left-edge sliding dashboard — kept as a top-level tool window.
         self._left_dock = LeftDockDashboard(bible_library=self._bible_library, main_window=self)
         self._left_dock.show()
+        _log_init_step("LeftDockDashboard shown")
 
         # Web session timer pill — hidden until a session is approved.
         self._web_timer_pill = WebTimerPill(parent=None)
         self._web_timer_pill.set_main_window(self)
         self._web_timer_pill.session_expired.connect(self._on_web_session_expired)
         self._web_timer_pill.extension_warning_expired.connect(self._on_extension_warning_expired)
+        _log_init_step("WebTimerPill set up")
 
         # Persistent panic button — always visible, bottom-right of primary screen.
         self._panic_btn = PanicButton(parent=None)
         self._panic_btn.panic_requested.connect(self._start_panic_intervention)
+        _log_init_step("PanicButton set up")
 
         self._web_watcher = WebWatcherService(parent=self)
         self._web_watcher.web_opened.connect(self._on_web_opened)  # type: ignore[arg-type]
         self._web_watcher.browser_running_changed.connect(self._on_browser_running_changed)
+        self._web_request_timer_ready = False
         self._kill_browsers_on_startup()
         self._web_watcher.start()
+        _log_init_step("WebWatcherService started")
 
         if self._browser_session_manager is not None or self._extension_heartbeat_monitor is not None:
             self._browser_session_watcher = BrowserSessionWatcher(
@@ -286,6 +342,7 @@ class MainWindow(QMainWindow):
             self._browser_session_watcher.session_payload_changed.connect(self._poll_panic_elevation)
             self._browser_session_watcher.heartbeat_healthy_changed.connect(self._enforce_extension_heartbeat)
             self._browser_session_watcher.start()
+        _log_init_step("BrowserSessionWatcher started")
 
         # 60-second heartbeat tick: note_clock + system.alive journal event
         if self._runtime is not None:
@@ -330,8 +387,10 @@ class MainWindow(QMainWindow):
             self._supervisor_health_timer.timeout.connect(self._check_supervisor_heartbeat)
             self._supervisor_health_timer.start(10_000)
             QTimer.singleShot(0, self._check_supervisor_heartbeat)
+        _log_init_step("__init__ complete")
 
     def _build_ui(self):
+        _build_ui_started_at = time.perf_counter()
         root = QWidget()
         root.setProperty("class", "windowBackground")
         vbox = QVBoxLayout(root)
@@ -339,6 +398,7 @@ class MainWindow(QMainWindow):
         vbox.setSpacing(0)
 
         vbox.addWidget(self._build_header())
+        print(f"[MainWindow._build_ui] _build_header done at +{(time.perf_counter() - _build_ui_started_at) * 1000:.1f} ms", flush=True)
 
         body = QWidget()
         body.setProperty("class", "transparent")
@@ -346,7 +406,9 @@ class MainWindow(QMainWindow):
         hbox.setContentsMargins(0, 0, 0, 0)
         hbox.setSpacing(0)
         hbox.addWidget(ReflectionDashboard(), stretch=1)
+        print(f"[MainWindow._build_ui] ReflectionDashboard done at +{(time.perf_counter() - _build_ui_started_at) * 1000:.1f} ms", flush=True)
         hbox.addWidget(self._build_sidebar(), stretch=0)
+        print(f"[MainWindow._build_ui] _build_sidebar done at +{(time.perf_counter() - _build_ui_started_at) * 1000:.1f} ms", flush=True)
         vbox.addWidget(body, stretch=1)
 
         self.setCentralWidget(root)
@@ -390,6 +452,15 @@ class MainWindow(QMainWindow):
         launch_pulse_action = QAction("Launch Pulse", self)
         launch_pulse_action.triggered.connect(self._launch_manual_pulse)
         tools_menu.addAction(launch_pulse_action)
+
+        reset_streak_action = QAction("Reset Streak", self)
+        reset_streak_action.triggered.connect(self._reset_streak)
+        tools_menu.addAction(reset_streak_action)
+
+        prayer_tool_action = QAction("Prayer Tool", self)
+        prayer_tool_action.setEnabled(self._runtime is not None)
+        prayer_tool_action.triggered.connect(self._open_prayer_tool)
+        tools_menu.addAction(prayer_tool_action)
 
         internet_settings_action = QAction("Internet Settings", self)
         internet_settings_action.setEnabled(self._internet_settings_service is not None)
@@ -436,6 +507,73 @@ class MainWindow(QMainWindow):
         self._encouragement_editor_win.show()
         self._encouragement_editor_win.raise_()
         self._encouragement_editor_win.activateWindow()
+
+    def _get_streak_service(self):
+        if self._streak is None and self._runtime is not None:
+            self._streak = PurityStreak(self._runtime.data_root)
+        return self._streak
+
+    def _get_streak_days(self) -> int:
+        streak = self._get_streak_service()
+        return streak.get_days() if streak is not None else 0
+
+    def _reset_streak(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Reset Streak",
+            "Are you sure you want to reset your streak to 0?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        streak = self._get_streak_service()
+        if streak is not None:
+            streak.reset()
+        self._refresh_streak_badges()
+
+    def _refresh_streak_badges(self) -> None:
+        days = self._get_streak_days()
+        if self._streak_badge_lbl is not None:
+            self._streak_badge_lbl.setText(f"\U0001f525 Day {days}")
+        if self._left_dock is not None:
+            self._left_dock.refresh_streak_badge()
+
+    def _get_prayer_recipient_library(self):
+        from services.prayer_recipients import PrayerRecipientLibrary
+
+        if self._prayer_recipient_library is None and self._runtime is not None:
+            self._prayer_recipient_library = PrayerRecipientLibrary(self._runtime.data_root)
+        return self._prayer_recipient_library
+
+    def _get_diet_state(self):
+        from services.diet_state import DietState
+
+        if self._diet_state is None and self._runtime is not None:
+            self._diet_state = DietState(self._runtime.data_root)
+        return self._diet_state
+
+    def _get_daily_calorie_budget(self) -> int:
+        if self._settings_manager is None:
+            return 2000
+        return int(self._settings_manager.get("app.diet", "daily_calories") or 2000)
+
+    def _open_prayer_tool(self) -> None:
+        from ui.tools.prayer_tool_dialog import PrayerToolDialog
+
+        library = self._get_prayer_recipient_library()
+        if library is None:
+            return
+
+        if self._prayer_tool_win is None:
+            self._prayer_tool_win = PrayerToolDialog(library, parent=None)
+            self._prayer_tool_win.finished.connect(
+                lambda _: setattr(self, "_prayer_tool_win", None)
+            )
+
+        self._prayer_tool_win.show()
+        self._prayer_tool_win.raise_()
+        self._prayer_tool_win.activateWindow()
 
     def _open_internet_settings(self) -> None:
         from ui.tools.internet_settings_dialog import InternetSettingsDialog
@@ -484,7 +622,7 @@ class MainWindow(QMainWindow):
         self._on_web_session_expired()
 
     def _debug_web_session_honor_dialog(self) -> None:
-        self._show_web_session_honor_dialog("I was looking up Bible verses online")
+        self._show_web_session_honor_dialog()
 
     def _apply_live_settings_from_manager(self) -> None:
         if self._settings_manager is None:
@@ -492,7 +630,7 @@ class MainWindow(QMainWindow):
             self._kill_browsers_on_startup_enabled = True
             return
 
-        self._permitted_browsers = get_permitted_browsers(self._settings_manager)
+        self._permitted_browsers = get_permitted_browsers(self._settings_manager) - {"msedge.exe"}
         self._kill_browsers_on_startup_enabled = get_kill_browsers_on_startup(
             self._settings_manager
         )
@@ -531,7 +669,7 @@ class MainWindow(QMainWindow):
         row.addStretch()
 
         # Streak badge
-        streak_badge = QLabel(f"🔥 Day {state.purity_streak_days}")
+        streak_badge = QLabel(f"🔥 Day {self._get_streak_days()}")
         streak_badge.setStyleSheet(
             f"font-family: '{FONT_FAMILY}'; font-size: {FONT_SIZE_NORMAL}pt;"
             f"font-weight: 700; color: {COLOR_TEXT};"
@@ -539,6 +677,7 @@ class MainWindow(QMainWindow):
             f"padding: 3px 10px;"
         )
         row.addWidget(streak_badge)
+        self._streak_badge_lbl = streak_badge
 
         # Clock (updates every 60 s)
         self._clock_lbl = QLabel()
@@ -558,6 +697,8 @@ class MainWindow(QMainWindow):
 
     def _update_clock(self):
         self._clock_lbl.setText(datetime.now().strftime("%H:%M"))
+        if self._streak_badge_lbl is not None:
+            self._streak_badge_lbl.setText(f"\U0001f525 Day {self._get_streak_days()}")
 
     def _build_sidebar(self) -> QGroupBox:
         sidebar = QGroupBox("Demo Triggers")
@@ -644,6 +785,10 @@ class MainWindow(QMainWindow):
         bible_browser_btn.clicked.connect(self._open_bible_browser)
         vbox.addWidget(bible_browser_btn)
 
+        calorie_test_btn = QPushButton("🍔 Test Calorie API")
+        calorie_test_btn.clicked.connect(self._test_calorie_estimate)
+        vbox.addWidget(calorie_test_btn)
+
         vbox.addStretch()
         return sidebar  # type: ignore[return-value]
 
@@ -656,12 +801,28 @@ class MainWindow(QMainWindow):
             emit_system_alive(self._runtime.journal)
 
     def _kill_browsers_on_startup(self):
-        """Kill any browsers already open when the app launches so the watcher starts fresh."""
+        """Kill any browsers already open when the app launches so the watcher starts fresh.
+
+        Runs on a background thread since taskkill spawns are slow; web-launch-request
+        approval is gated on completion (see ``_on_browser_kill_finished``) so a
+        legitimately-approved shortcut launch can't race a stale-browser kill.
+        """
         if not self._kill_browsers_on_startup_enabled:
+            self._web_request_timer_ready = True
             return
-        from shane_common.processes.windows import taskkill_processes
         from services.web_watcher import _WATCHED_BROWSERS
-        taskkill_processes(list(_WATCHED_BROWSERS))
+        self._browser_kill_thread = QThread(self)
+        self._browser_kill_worker = _BrowserKillWorker(list(_WATCHED_BROWSERS))
+        self._browser_kill_worker.moveToThread(self._browser_kill_thread)
+        self._browser_kill_thread.started.connect(self._browser_kill_worker.run)
+        self._browser_kill_worker.finished.connect(self._on_browser_kill_finished)
+        self._browser_kill_worker.finished.connect(self._browser_kill_thread.quit)
+        self._browser_kill_worker.finished.connect(self._browser_kill_worker.deleteLater)
+        self._browser_kill_thread.finished.connect(self._browser_kill_thread.deleteLater)
+        self._browser_kill_thread.start()
+
+    def _on_browser_kill_finished(self) -> None:
+        self._web_request_timer_ready = True
 
     def _on_web_opened(self, exe: str):
         """Intercept browser opens: minimize it, then restore or kill based on user choice."""
@@ -675,7 +836,23 @@ class MainWindow(QMainWindow):
         from services.journal_events import emit_chrome_opened, emit_chrome_decision
         from services.web_watcher import _WATCHED_BROWSERS
 
-        permitted = str(exe).strip().lower() in self._permitted_browsers
+        exe_lower = str(exe).strip().lower()
+        if exe_lower == "msedge.exe":
+            # Edge is never permitted — kill it immediately without showing any popup.
+            taskkill_processes(["msedge.exe"])
+            self._web_timer_pill.stop_session()
+            self._clear_browser_session_state()
+            if self._runtime is not None:
+                emit_chrome_opened(self._runtime.journal, pid_count=0)
+                emit_chrome_decision(
+                    self._runtime.journal,
+                    allowed=False,
+                    choice="",
+                    reason="",
+                )
+            return
+
+        permitted = exe_lower in self._permitted_browsers
         minimized_hwnds: list = []
 
         def _get_browser_pids():
@@ -699,11 +876,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(300, _minimize_browser_windows)
         QTimer.singleShot(800, _minimize_browser_windows)
         QTimer.singleShot(1500, _minimize_browser_windows)
+        if permitted:
+            # Auto-accept immediately — no fields required, popup just flashes and closes.
+            QTimer.singleShot(0, popup._on_commit)
         result = popup.exec()
         selected_choice = popup.selected_choice
         reason_text = popup.reason_text
         allowed_urls = list(popup.allowed_urls)
-        duration_seconds = int(popup.duration_seconds)
 
         if result == QDialog.DialogCode.Accepted:
             restore_windows(minimized_hwnds)
@@ -711,8 +890,9 @@ class MainWindow(QMainWindow):
             self._web_session_choice = selected_choice
             self._web_session_verse_title = getattr(popup, "verse_title", "")
             self._web_session_urls = allowed_urls
-            self._web_session_duration_seconds = duration_seconds
-            self._start_browser_session_state(choice=selected_choice, allowed_urls=allowed_urls, duration_seconds=duration_seconds)
+            self._web_session_duration_seconds = None
+            self._start_browser_session_state(choice=selected_choice, allowed_urls=allowed_urls, duration_seconds=86_400)
+            write_launcher_approved_marker()
             if self._runtime is not None:
                 from services.url_history import UrlHistory
                 UrlHistory(self._runtime.data_root).record_urls(allowed_urls)
@@ -722,7 +902,27 @@ class MainWindow(QMainWindow):
                     choice=selected_choice,
                     reason=reason_text,
                 )
-            self._start_web_timer(duration_seconds)
+            self._start_extension_launch_check()
+
+            # Show a random web-flagged encouragement before resuming the session.
+            if self._panic_reminders is None and self._runtime is not None:
+                from services.panic_reminders import PanicReminders
+                self._panic_reminders = PanicReminders(self._runtime.data_root)
+            if self._bible_library is None and self._runtime is not None:
+                from services.bible_library import BibleLibrary
+                self._bible_library = BibleLibrary(self._runtime.data_root)
+            web_reminder = (
+                self._panic_reminders.get_random_web()
+                if self._panic_reminders is not None
+                else None
+            )
+            if web_reminder is not None:
+                from ui.intervention.encouragement_preview import show_encouragement_preview
+                show_encouragement_preview(web_reminder, self._bible_library, parent=None)
+                self._web_session_verse_title = web_reminder.get("title", "") or self._web_session_verse_title
+
+            self._web_timer_pill.set_session_title(self._web_session_verse_title)
+            self._web_timer_pill.show_static()
         else:
             taskkill_processes(list(_WATCHED_BROWSERS))
             self._web_timer_pill.stop_session()
@@ -894,6 +1094,9 @@ class MainWindow(QMainWindow):
         if self._runtime is None:
             self._log_ui_timer_duration("_process_web_launch_requests", started_at)
             return
+        if not self._web_request_timer_ready:
+            self._log_ui_timer_duration("_process_web_launch_requests", started_at)
+            return
 
         try:
             try:
@@ -946,73 +1149,71 @@ class MainWindow(QMainWindow):
             )
 
         popup = WebPopup(permitted=True, parent=self, data_root=self._runtime.data_root if self._runtime is not None else None)
-        result = popup.exec()
+        # Auto-accept immediately — no fields required, popup just flashes and closes.
+        QTimer.singleShot(0, popup._on_commit)
+        popup.exec()
         selected_choice = popup.selected_choice
         reason_text = popup.reason_text
         allowed_urls = list(popup.allowed_urls)
         duration_seconds = int(popup.duration_seconds)
 
-        if result == QDialog.DialogCode.Accepted:
-            if self._runtime is not None:
-                emit_chrome_decision(
-                    self._runtime.journal,
-                    allowed=True,
-                    choice=selected_choice,
-                    reason=reason_text,
-                )
-            self._web_session_reason = reason_text
-            self._web_session_choice = selected_choice
-            self._web_session_verse_title = getattr(popup, "verse_title", "")
-            self._web_session_urls = allowed_urls
-            self._web_session_duration_seconds = duration_seconds
-            self._start_browser_session_state(choice=selected_choice, allowed_urls=allowed_urls, duration_seconds=duration_seconds)
-            if self._runtime is not None:
-                from services.url_history import UrlHistory
-                UrlHistory(self._runtime.data_root).record_urls(allowed_urls)
-            write_launcher_approved_marker()
-            chrome = _find_chrome()
-            if chrome:
-                proc = subprocess.Popen([str(chrome)] + list(args))
-            else:
-                proc = subprocess.Popen(["chrome"] + list(args), shell=True)
-            self._start_extension_launch_check()
-            if self._runtime is not None:
-                append_web_request_log(
-                    self._runtime.data_root,
-                    "app.chrome_started",
-                    "Chrome was started for approved web launch request.",
-                    details={
-                        "pid": proc.pid,
-                        "args": list(args),
-                        "choice": selected_choice,
-                        "reason": reason_text,
-                        "allowed_urls": allowed_urls,
-                        "duration_seconds": duration_seconds,
-                    },
-                )
-            self._start_web_timer(duration_seconds)
-            return
-
-        self._web_timer_pill.stop_session()
-        self._clear_browser_session_state()
         if self._runtime is not None:
             emit_chrome_decision(
                 self._runtime.journal,
-                allowed=False,
+                allowed=True,
                 choice=selected_choice,
                 reason=reason_text,
             )
+        self._web_session_reason = reason_text
+        self._web_session_choice = selected_choice
+        self._web_session_verse_title = getattr(popup, "verse_title", "")
+        self._web_session_urls = allowed_urls
+        self._web_session_duration_seconds = duration_seconds
+        self._start_browser_session_state(choice=selected_choice, allowed_urls=allowed_urls, duration_seconds=86_400)
+        if self._runtime is not None:
+            from services.url_history import UrlHistory
+            UrlHistory(self._runtime.data_root).record_urls(allowed_urls)
+        write_launcher_approved_marker()
+
+        # Show a random web-flagged encouragement before launching Chrome.
+        if self._panic_reminders is None and self._runtime is not None:
+            from services.panic_reminders import PanicReminders
+            self._panic_reminders = PanicReminders(self._runtime.data_root)
+        if self._bible_library is None and self._runtime is not None:
+            from services.bible_library import BibleLibrary
+            self._bible_library = BibleLibrary(self._runtime.data_root)
+        web_reminder = (
+            self._panic_reminders.get_random_web()
+            if self._panic_reminders is not None
+            else None
+        )
+        if web_reminder is not None:
+            from ui.intervention.encouragement_preview import show_encouragement_preview
+            show_encouragement_preview(web_reminder, self._bible_library, parent=None)
+            self._web_session_verse_title = web_reminder.get("title", "") or self._web_session_verse_title
+
+        chrome = _find_chrome()
+        if chrome:
+            proc = subprocess.Popen([str(chrome)] + list(args))
+        else:
+            proc = subprocess.Popen(["chrome"] + list(args), shell=True)
+        self._start_extension_launch_check()
+        if self._runtime is not None:
             append_web_request_log(
                 self._runtime.data_root,
-                "app.request_blocked",
-                "Queued web launch request was blocked or cancelled.",
+                "app.chrome_started",
+                "Chrome was started for approved web launch request.",
                 details={
+                    "pid": proc.pid,
+                    "args": list(args),
                     "choice": selected_choice,
                     "reason": reason_text,
                     "allowed_urls": allowed_urls,
-                    "duration_seconds": duration_seconds,
+                    "verse_title": self._web_session_verse_title,
                 },
             )
+        self._web_timer_pill.set_session_title(self._web_session_verse_title)
+        self._web_timer_pill.show_static()
 
     def _start_browser_session_state(
         self,
@@ -1058,7 +1259,8 @@ class MainWindow(QMainWindow):
 
     def _check_extension_at_launch(self) -> None:
         self._extension_launch_check_timer = None
-        if self._extension_heartbeat_is_healthy():
+        is_healthy = self._extension_heartbeat_monitor is None or self._extension_heartbeat_monitor.is_healthy()
+        if bool(is_healthy) or self._extension_heartbeat_grace_active():
             return
         if self._runtime is not None:
             append_web_request_log(
@@ -1155,14 +1357,12 @@ class MainWindow(QMainWindow):
             )
             self._start_web_timer(self._web_session_duration_seconds)
         else:
-            reason = self._web_session_reason
             taskkill_processes(list(_WATCHED_BROWSERS))
             self._web_timer_pill.stop_session()
             self._web_session_reason = ""
             self._web_session_choice = ""
             self._clear_browser_session_state()
-            if reason:
-                self._show_web_session_honor_dialog(reason)
+            self._show_web_session_honor_dialog()
 
     def _on_browser_running_changed(self, is_running: bool) -> None:
         """React to worker-thread browser state updates without UI-thread polling."""
@@ -1170,14 +1370,12 @@ class MainWindow(QMainWindow):
             return
         if is_running:
             return
-        reason = self._web_session_reason
         self._web_timer_pill.stop_session()
         self._clear_browser_session_state()
-        if reason:
-            self._show_web_session_honor_dialog(reason)
+        self._show_web_session_honor_dialog()
 
-    def _show_web_session_honor_dialog(self, reason: str) -> None:
-        """Show the post-session accountability dialog."""
+    def _show_web_session_honor_dialog(self) -> None:
+        """Show the post-session accountability dialog: did you honor God online?"""
         from ui.intervention.web_session_honor_dialog import WebSessionHonorDialog
         from services.telegram_notify import build_telegram_adapter_from_settings
 
@@ -1188,9 +1386,9 @@ class MainWindow(QMainWindow):
                 self._settings_manager,
                 format_message=format_notification_details,
             )
-            telegram.send(make_web_session_reach_out_event(reason=reason))
+            telegram.send(make_web_session_reach_out_event(reason=""))
 
-        dlg = WebSessionHonorDialog(reason=reason, reach_out_callback=_reach_out)
+        dlg = WebSessionHonorDialog(reach_out_callback=_reach_out)
         dlg.exec()
 
     def _open_review(self):
@@ -1225,27 +1423,35 @@ class MainWindow(QMainWindow):
             return
         self._open_pulse_dialog(pending)
 
-    def _open_pulse_dialog(self, pending) -> None:
-        if self._pulse_dialog is not None and self._pulse_dialog.isVisible():
-            self._pulse_dialog.raise_()
-            self._pulse_dialog.activateWindow()
-            return
+    def _build_prayer_session_names(self) -> list[str]:
+        library = self._get_prayer_recipient_library()
+        names = library.get_available_names() if library is not None else []
+        count = 2
+        if self._settings_manager is not None:
+            count = get_prayer_recipients_per_session(self._settings_manager)
+        return random.sample(names, min(count, len(names))) if names else []
 
-        verse_text = self._bible_library.random_verse_text() if self._bible_library is not None else None
-        self._pulse_dialog = PulseDialog(
-            pending=pending,
-            submit_pulse=lambda **payload: self._handle_pulse_submit(pending, **payload),
-            submit_note=lambda text: self._handle_pulse_note_submit(pending, text),
-            send_reach_out=lambda sliders, text: self._handle_pulse_reach_out(pending, sliders, text),
-            verse_text=verse_text,
-            parent=None,
+    def _mark_prayer_recipient_prayed(self, name: str) -> None:
+        library = self._get_prayer_recipient_library()
+        if library is not None:
+            library.mark_prayed(name)
+
+    def _start_new_prayer_session(self) -> None:
+        self._left_dock.start_prayer_session(self._build_prayer_session_names())
+
+    def _open_pulse_dialog(self, pending) -> None:
+        self._left_dock.start_prayer_session(self._build_prayer_session_names())
+        self._left_dock.retry_failed_diet_calories()
+        self._left_dock.expand()
+        self._handle_pulse_submit(
+            pending,
+            sliders=PulseSliders(),
+            answers={},
+            note_text="",
+            reach_out_text="",
+            reach_out_sent=False,
+            evening_duration_choice=None,
         )
-        self._pulse_dialog.finished.connect(
-            lambda _: setattr(self, "_pulse_dialog", None)
-        )
-        self._pulse_dialog.show()
-        self._pulse_dialog.raise_()
-        self._pulse_dialog.activateWindow()
 
     def _handle_pulse_submit(
         self,
@@ -1562,6 +1768,25 @@ class MainWindow(QMainWindow):
 
     def _test_telegram_supervisor_shutdown(self) -> None:
         self._send_test_telegram("purity_supervisor.shutdown", details="reason=test.button")
+
+    def _test_calorie_estimate(self) -> None:
+        from services.openai_client import CalorieEstimationError, estimate_calories
+
+        test_food = "one medium banana and a cup of black coffee"
+        try:
+            calories = estimate_calories(test_food)
+        except CalorieEstimationError as exc:
+            QMessageBox.warning(self, "Calorie Estimate Failed", str(exc))
+            return
+        except Exception:
+            traceback.print_exc()
+            QMessageBox.warning(self, "Calorie Estimate Failed", "Unexpected error; see logs.")
+            return
+        QMessageBox.information(
+            self,
+            "Calorie Estimate",
+            f"Food: {test_food}\nEstimated calories: {calories:.0f}",
+        )
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         app = QApplication.instance()

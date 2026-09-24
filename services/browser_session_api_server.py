@@ -12,6 +12,7 @@ class _BrowserSessionRequestHandler(BaseHTTPRequestHandler):
     session_manager: BrowserSessionManager | None = None
     heartbeat_monitor: ExtensionHeartbeatMonitor | None = None
     internet_settings_service: Any = None
+    on_detection: Any = None
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/internet-settings":
@@ -68,6 +69,14 @@ class _BrowserSessionRequestHandler(BaseHTTPRequestHandler):
             self._write_json(200, status)
             return
 
+        if self.path == "/browser-session/detection":
+            payload = body if isinstance(body, dict) else {}
+            callback = type(self).on_detection
+            if callback is not None:
+                callback(payload)
+            self._write_json(200, {"ok": True})
+            return
+
         self._write_json(404, {"error": "not_found"})
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -105,10 +114,12 @@ class BrowserSessionApiServer:
         host: str = "127.0.0.1",
         port: int = 8765,
         internet_settings_service: Any = None,
+        on_detection: Any = None,
     ) -> None:
         self._session_manager = session_manager
         self._heartbeat_monitor = heartbeat_monitor
         self._internet_settings_service = internet_settings_service
+        self._on_detection = on_detection
         self._host = host
         self._port = port
         self._server: ThreadingHTTPServer | None = None
@@ -124,6 +135,7 @@ class BrowserSessionApiServer:
         _BrowserSessionRequestHandler.session_manager = self._session_manager
         _BrowserSessionRequestHandler.heartbeat_monitor = self._heartbeat_monitor
         _BrowserSessionRequestHandler.internet_settings_service = self._internet_settings_service
+        _BrowserSessionRequestHandler.on_detection = self._on_detection
         self._server = ThreadingHTTPServer((self._host, self._port), _BrowserSessionRequestHandler)
         self._port = int(self._server.server_address[1])
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)

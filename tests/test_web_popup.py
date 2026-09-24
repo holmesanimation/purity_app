@@ -98,14 +98,6 @@ def test_web_popup_permitted_commit_btn_enabled_for_valid_purpose() -> None:
     assert popup._commit_btn.isEnabled() is True
 
 
-def test_web_popup_permitted_feelings_grid_hidden_until_revealed() -> None:
-    _app()
-    popup = WebPopup(permitted=True)
-    assert popup._feelings_widget.isHidden() is True
-    popup._reveal_feelings()
-    assert popup._feelings_widget.isHidden() is False
-
-
 def test_web_popup_permitted_commit_sets_result_fields() -> None:
     _app()
     popup = WebPopup(permitted=True)

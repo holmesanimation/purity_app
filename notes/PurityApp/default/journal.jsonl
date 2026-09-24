@@ -1,2 +1,3 @@
 {"ts": 1782514729.9680164, "wall_ts": 1782514729.9680164, "owner": "journal", "note_type": "GENERAL", "text": "this is a test", "instrument": null, "strategy_id": null, "context": {}}
 {"ts": 1782531831.2423325, "wall_ts": 1782531831.2423325, "owner": "journal", "note_type": "GENERAL", "text": "this is a test journal entry", "instrument": null, "strategy_id": null, "context": {"tags": ["test"]}}
+{"ts": 1789492385.050705, "wall_ts": 1789492385.050705, "owner": "journal", "note_type": "GENERAL", "text": "This is a test", "instrument": null, "strategy_id": null, "context": {"tagged_verses": [{"key": "joshua_19_37", "display": "Joshua 19:37"}]}}

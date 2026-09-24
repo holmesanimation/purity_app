@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from PySide6.QtWidgets import QApplication
 
 from services.pulse_models import PendingPulse, PulseKind
-from ui.pulse_dialog import PulseDialog
+from ui.pulse_dialog_v1 import PulseDialog
 
 
 def _app() -> QApplication:

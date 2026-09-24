@@ -4,16 +4,23 @@
 
 # Start console capture as early as possible so no output is missed.
 # Logs land in TEMP initially; relocate() moves them once run_id is known.
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_WORKSPACE_ROOT = _HERE.parent
+for _path in (_WORKSPACE_ROOT, _WORKSPACE_ROOT / "shane_common" / "src"):
+    if _path.exists() and str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
 from shane_common.logging.console_capture import ConsoleCapture
 ConsoleCapture.start()
 
-import sys
 import os
 import subprocess
 import time
 import traceback
 from datetime import datetime
-from pathlib import Path
 from shane_common.preferences.manager import SettingsManager
 from shane_common.ui.preferences.preferences_dialog import PreferencesDialog
 from PySide6.QtWidgets import (
@@ -132,7 +139,7 @@ def _append_startup_log(data_root: Path, message: str) -> None:
     Uses ASCII-only content to avoid encoding errors on cp1252 stdout.
     """
     pid = os.getpid()
-    ts = datetime.now().isoformat(timespec="seconds")
+    ts = datetime.now().isoformat(timespec="milliseconds")
     line = f"[PurityApp] {ts} [PID={pid}] {message}"
     try:
         print(line, flush=True)
@@ -314,16 +321,25 @@ def _launch_supervisor(data_root: Path) -> None:
     supervisor_path = Path(__file__).parent / "supervisor.py"
     if not supervisor_path.exists():
         return
-    purity_app_cmd = _json.dumps([sys.executable, str(Path(__file__))])
+    # Pin to the venv shared by shane_common, mirroring web_requests.start_purity_app,
+    # so this fallback never launches under whatever interpreter happened to start app.py.
+    pinned = Path(r"D:\code\git\.venv\Scripts\python.exe")
+    executable = str(pinned if pinned.exists() else sys.executable)
+    purity_app_cmd = _json.dumps([executable, str(Path(__file__))])
     cmd = [
-        sys.executable,
+        executable,
         str(supervisor_path),
         "--data-root", str(data_root),
         "--purity-app-cmd", purity_app_cmd,
     ]
     creationflags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+    env = dict(os.environ)
+    # Drop any PYTHONPATH/VIRTUAL_ENV inherited from the launching shell so the
+    # supervisor always resolves shane_common from the pinned venv.
+    env.pop("PYTHONPATH", None)
+    env.pop("VIRTUAL_ENV", None)
     try:
-        subprocess.Popen(cmd, creationflags=creationflags)
+        subprocess.Popen(cmd, creationflags=creationflags, env=env)
     except Exception:
         import traceback
         traceback.print_exc()
@@ -1398,6 +1414,10 @@ def main():
     from services.web_requests import start_purity_app
     from ui.main_window import MainWindow as AppMainWindow
     from ui.system.supervisor_tray import PurityTrayApp
+    from services.backup.controller import BackupController
+    from services.backup.dropbox_controller import DropboxController
+    from services.backup.recovery_drill_controller import RecoveryDrillController
+    from services.backup.scheduler import BackupScheduler
 
     settings_manager = build_purity_settings_manager()
 
@@ -1420,13 +1440,16 @@ def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(GLOBAL_QSS)
     app.setQuitOnLastWindowClosed(False)
+    _append_startup_log(data_root, "QApplication created.")
 
     existing_instance = _find_running_instance(data_root)
+    _append_startup_log(data_root, "Checked for existing running instance.")
     if existing_instance is not None:
         submit_show_app_request(data_root, source="app_launch")
         return 0
 
     runtime = create_purity_runtime(data_root)
+    _append_startup_log(data_root, "Runtime created.")
 
     # Relocate console CSV from TEMP to the permanent logs directory.
     try:
@@ -1438,6 +1461,7 @@ def main():
     except Exception:
         import traceback
         traceback.print_exc()
+    _append_startup_log(data_root, "Console capture relocated.")
 
     browser_session_manager = BrowserSessionManager(data_root)
     browser_session_manager.clear_session()
@@ -1445,15 +1469,36 @@ def main():
     extension_heartbeat_monitor.clear()
     from services.internet_settings import InternetSettingsService
     internet_settings_service = InternetSettingsService(data_root)
+    _append_startup_log(data_root, "Browser session state cleared.")
+
+    def _on_browser_detection(payload: dict) -> None:
+        if str(payload.get("level") or "") != "HARD_BLOCK":
+            return
+        try:
+            from services.pulse_notifications import format_notification_details, make_hard_block_alert_event
+            from services.telegram_notify import build_telegram_adapter_from_settings
+
+            telegram = build_telegram_adapter_from_settings(
+                settings_manager,
+                format_message=format_notification_details,
+            )
+            telegram.send(make_hard_block_alert_event())
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
     browser_session_api_server = BrowserSessionApiServer(
         browser_session_manager,
         extension_heartbeat_monitor,
         internet_settings_service=internet_settings_service,
+        on_detection=_on_browser_detection,
     )
     browser_session_api_server.start()
+    _append_startup_log(data_root, "Browser session API server started.")
     restart_requested = {"value": False}
 
     runtime.heartbeat.start()
+    _append_startup_log(data_root, "Heartbeat writer started.")
 
     # --- Launch supervisor watchdog (separate process) -----------------------
     if not _is_supervisor_running(data_root):
@@ -1469,7 +1514,9 @@ def main():
         extension_heartbeat_monitor=extension_heartbeat_monitor,
         internet_settings_service=internet_settings_service,
     )
+    _append_startup_log(data_root, "MainWindow constructed.")
     window.show()
+    _append_startup_log(data_root, "MainWindow shown.")
 
     emit_app_started(
         runtime.journal,
@@ -1534,11 +1581,33 @@ def main():
     app.installEventFilter(notes_filter)
 
     # Supervisor tray
+    backup_controller = BackupController(settings_manager, parent=app)
+    dropbox_controller = DropboxController(settings_manager, parent=app)
+    recovery_drill_controller = RecoveryDrillController(
+        settings_manager, backup_controller, dropbox_controller, parent=app
+    )
+
+    # Weekly backup schedule — shares backup_controller's single-flight lock
+    # with manual runs, so scheduled and manual triggers never overlap.
+    # Dropbox uses the same weekly tick and its own independent lock/state,
+    # so a Dropbox failure never affects the local backup.
+    backup_scheduler = BackupScheduler(
+        settings_manager, backup_controller, parent=app, dropbox_controller=dropbox_controller
+    )
+    backup_schedule_timer = QTimer(app)
+    backup_schedule_timer.timeout.connect(backup_scheduler.check_now)
+    backup_schedule_timer.start(60_000)
+    QTimer.singleShot(0, backup_scheduler.check_now)
+
     purity_tray = PurityTrayApp(
         data_root,
         main_window=window,
         reload_fn=_request_reload,
         panic_button=window._panic_btn,
+        settings_manager=settings_manager,
+        backup_controller=backup_controller,
+        dropbox_controller=dropbox_controller,
+        recovery_drill_controller=recovery_drill_controller,
     )
     purity_tray.start()
     window.attach_tray_app(purity_tray)

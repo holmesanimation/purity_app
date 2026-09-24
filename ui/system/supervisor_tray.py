@@ -4,11 +4,11 @@ PurityTrayApp — system tray icon + polling loop for purity_app.
 Uses BaseTrayApp from shane_common.watchdog.tray so the quit audit and
 liveness machinery are shared across all supervised applications.
 
-Tray icon colour:
-  Green  — purity_app heartbeat fresh
-  Yellow — purity_app heartbeat stale
-  Red    — purity_app heartbeat dead / never written
-  Gray   — heartbeats directory not yet present
+Tray icon is a static PNG (icons/icon_16x16.png); status is conveyed via tooltip:
+  "running"  — purity_app heartbeat fresh
+  "STALE"    — purity_app heartbeat stale
+  "DEAD"     — purity_app heartbeat dead / never written
+  "not running" — heartbeats directory not yet present
 
 Left-click or double-click shows / hides the PurityStatusWindow.
 Right-click: Show Status | ─── | Quit  (Quit is appended by BaseTrayApp.start()).
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6 import QtCore, QtWidgets
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QSystemTrayIcon
 
 from shane_common.watchdog.audit import AppendOnlyAuditLog
@@ -27,16 +28,54 @@ from shane_common.watchdog.tray.base_window import BaseStatusWindow
 from shane_common.watchdog.tray.icons import (
     COLOR_GRAY,
     COLOR_GREEN,
-    COLOR_RED,
     COLOR_YELLOW,
-    make_circle_icon,
 )
 
 try:
+    from purity_app.services.backup import health as backup_health
+    from purity_app.services.backup import state as backup_state
+    from purity_app.services.backup.controller import BackupController
+    from purity_app.services.backup.dropbox_controller import DropboxController
+    from purity_app.services.backup.dropbox_service import get_dropbox_auth_state
+    from purity_app.services.backup.models import RunStatus
+    from purity_app.services.backup.recovery_drill import (
+        DROPBOX_NOT_CONFIGURED,
+        DROPBOX_REAUTH_REQUIRED,
+    )
+    from purity_app.services.backup.recovery_drill_controller import RecoveryDrillController
+    from purity_app.services.backup.restore import load_restore_state
     from purity_app.services.browser_session import ExtensionHeartbeatMonitor
+    from purity_app.services.settings_schemas import (
+        get_backup_local_destination,
+        get_backup_recovery_drill_interval_days,
+        get_backup_stale_threshold_days,
+        get_debug_mode_enabled,
+        resolve_purity_data_root,
+        set_debug_mode_enabled,
+    )
     from purity_app.services.supervisor_client import PuritySupervisorClient
 except ModuleNotFoundError:
+    from services.backup import health as backup_health  # type: ignore[no-redef]
+    from services.backup import state as backup_state  # type: ignore[no-redef]
+    from services.backup.controller import BackupController  # type: ignore[no-redef]
+    from services.backup.dropbox_controller import DropboxController  # type: ignore[no-redef]
+    from services.backup.dropbox_service import get_dropbox_auth_state  # type: ignore[no-redef]
+    from services.backup.models import RunStatus  # type: ignore[no-redef]
+    from services.backup.recovery_drill import (  # type: ignore[no-redef]
+        DROPBOX_NOT_CONFIGURED,
+        DROPBOX_REAUTH_REQUIRED,
+    )
+    from services.backup.recovery_drill_controller import RecoveryDrillController  # type: ignore[no-redef]
+    from services.backup.restore import load_restore_state  # type: ignore[no-redef]
     from services.browser_session import ExtensionHeartbeatMonitor  # type: ignore[no-redef]
+    from services.settings_schemas import (  # type: ignore[no-redef]
+        get_backup_local_destination,
+        get_backup_recovery_drill_interval_days,
+        get_backup_stale_threshold_days,
+        get_debug_mode_enabled,
+        resolve_purity_data_root,
+        set_debug_mode_enabled,
+    )
     from services.supervisor_client import PuritySupervisorClient  # type: ignore[no-redef]
 
 
@@ -47,10 +86,13 @@ class PurityStatusWindow(BaseStatusWindow):
     Shows the latest heartbeat age and the last few audit lines.
     """
 
-    def __init__(self, client: PuritySupervisorClient, parent=None) -> None:
+    def __init__(self, client: PuritySupervisorClient, settings_manager=None, parent=None) -> None:
         self._client = client
+        self._settings_manager = settings_manager
         self._status_label: Optional[QtWidgets.QLabel] = None
         self._extension_status_label: Optional[QtWidgets.QLabel] = None
+        self._backup_status_label: Optional[QtWidgets.QLabel] = None
+        self._recovery_drill_status_label: Optional[QtWidgets.QLabel] = None
         self._extension_heartbeat_monitor = ExtensionHeartbeatMonitor(client.heartbeats_dir.parents[2])
         super().__init__(
             settings_org="purity",
@@ -71,6 +113,14 @@ class PurityStatusWindow(BaseStatusWindow):
         self._extension_status_label = QtWidgets.QLabel("—")
         self._extension_status_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self._extension_status_label)
+
+        self._backup_status_label = QtWidgets.QLabel("—")
+        self._backup_status_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._backup_status_label)
+
+        self._recovery_drill_status_label = QtWidgets.QLabel("—")
+        self._recovery_drill_status_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._recovery_drill_status_label)
         layout.addStretch()
 
     def _set_extension_status_style(self, color: str) -> None:
@@ -124,6 +174,73 @@ class PurityStatusWindow(BaseStatusWindow):
         self._extension_status_label.setText(extension_text)
         self._set_extension_status_style(extension_color)
 
+        if self._backup_status_label is not None:
+            self._backup_status_label.setText(self._format_backup_status())
+        if self._recovery_drill_status_label is not None:
+            self._recovery_drill_status_label.setText(self._format_recovery_drill_status())
+
+    def _format_backup_status(self) -> str:
+        if self._settings_manager is None:
+            return "backup: unavailable"
+        destination = get_backup_local_destination(self._settings_manager)
+        data_root = resolve_purity_data_root(self._settings_manager)
+        if destination is None:
+            local_text = "LOCAL not configured"
+        else:
+            runs = backup_state.load_state(data_root)
+            if not runs:
+                local_text = "LOCAL configured, no runs yet"
+            else:
+                last = runs[-1]
+                local_text = (
+                    f"LOCAL {last.status.value.upper()} "
+                    f"({last.verified_count}/{last.file_count} verified) at "
+                    f"{last.completed_at or last.started_at}"
+                )
+
+        if destination is not None:
+            threshold = get_backup_stale_threshold_days(self._settings_manager)
+            if backup_health.is_stale(runs, threshold):
+                local_text += " [STALE]"
+
+        auth_state = get_dropbox_auth_state(self._settings_manager)
+        dropbox_runs = backup_state.load_dropbox_state(data_root)
+        if not dropbox_runs:
+            dropbox_text = f"DROPBOX {auth_state.value}"
+        else:
+            last_dropbox = dropbox_runs[-1]
+            dropbox_text = (
+                f"DROPBOX {last_dropbox.status.value.upper()} "
+                f"({last_dropbox.verified_count}/{last_dropbox.file_count} verified) at "
+                f"{last_dropbox.completed_at or last_dropbox.started_at}"
+            )
+            threshold = get_backup_stale_threshold_days(self._settings_manager)
+            if backup_health.is_stale(dropbox_runs, threshold):
+                dropbox_text += " [STALE]"
+
+        return f"backup: {local_text} | {dropbox_text}"
+
+    def _format_recovery_drill_status(self) -> str:
+        if self._settings_manager is None:
+            return "recovery drill: unavailable"
+        data_root = resolve_purity_data_root(self._settings_manager)
+        interval = get_backup_recovery_drill_interval_days(self._settings_manager)
+        runs = load_restore_state(data_root)
+
+        local_last = backup_health.last_successful_restore(runs, "local")
+        local_due = backup_health.is_recovery_drill_due(
+            local_last.get("completed_at") if local_last else None, interval_days=interval
+        )
+        local_text = f"LOCAL {'due' if local_due else 'ok'}"
+
+        dropbox_last = backup_health.last_successful_restore(runs, "dropbox")
+        dropbox_due = backup_health.is_recovery_drill_due(
+            dropbox_last.get("completed_at") if dropbox_last else None, interval_days=interval
+        )
+        dropbox_text = f"DROPBOX {'due' if dropbox_due else 'ok'}"
+
+        return f"recovery drill: {local_text} | {dropbox_text}"
+
 
 class PurityTrayApp(BaseTrayApp):
     """
@@ -141,12 +258,25 @@ class PurityTrayApp(BaseTrayApp):
         main_window: QtWidgets.QWidget | None = None,
         reload_fn=None,
         panic_button: QtWidgets.QWidget | None = None,
+        settings_manager=None,
+        backup_controller: "BackupController | None" = None,
+        dropbox_controller: "DropboxController | None" = None,
+        recovery_drill_controller: "RecoveryDrillController | None" = None,
         parent=None,
     ) -> None:
         self._client = PuritySupervisorClient(data_root)
         self._main_window = main_window
         self._reload_fn = reload_fn
         self._panic_btn = panic_button
+        self._settings_manager = settings_manager
+        self._backup_controller = backup_controller
+        self._dropbox_controller = dropbox_controller
+        self._recovery_drill_controller = recovery_drill_controller
+        self._backup_dialog = None
+        self._local_backup_was_stale = False
+        self._dropbox_backup_was_stale = False
+        self._local_drill_was_due = False
+        self._dropbox_drill_was_due = False
         liveness_path = (
             data_root / "_system" / "purity" / "locks" / "purity_tray.liveness.json"
         )
@@ -156,9 +286,18 @@ class PurityTrayApp(BaseTrayApp):
             settings_app="PurityMonitor",
             parent=parent,
         )
-        self._status_window = PurityStatusWindow(self._client)
+        self._status_window = PurityStatusWindow(self._client, settings_manager=settings_manager)
+        if self._backup_controller is not None:
+            self._backup_controller.run_finished.connect(
+                lambda result: self._notify_backup_result("Local", result)
+            )
+        if self._dropbox_controller is not None:
+            self._dropbox_controller.run_finished.connect(
+                lambda result: self._notify_backup_result("Dropbox", result)
+            )
 
-        # Tray initial tooltip
+        # Tray initial icon + tooltip
+        self._tray.setIcon(QIcon(str(Path(__file__).parents[1] / "icons" / "icon_16x16.png")))
         self._tray.setToolTip("Purity")
 
         # Context menu — Quit is appended by BaseTrayApp.start()
@@ -166,9 +305,16 @@ class PurityTrayApp(BaseTrayApp):
         show_main_action.triggered.connect(self._show_main_window)
         show_status_action = self._menu.addAction("Show Status")
         show_status_action.triggered.connect(self._toggle_status_window)
+        if self._backup_controller is not None and self._settings_manager is not None:
+            backup_action = self._menu.addAction("Backup...")
+            backup_action.triggered.connect(self._toggle_backup_dialog)
         if self._reload_fn is not None:
             reload_action = self._menu.addAction("Reload")
             reload_action.triggered.connect(self._request_reload)
+        self._debug_mode_action = None
+        if self._reload_fn is not None and self._settings_manager is not None:
+            self._debug_mode_action = self._menu.addAction(self._debug_mode_action_label())
+            self._debug_mode_action.triggered.connect(self._toggle_debug_mode)
         self._panic_visible_action = None
         if self._panic_btn is not None:
             self._panic_visible_action = self._menu.addAction("Show Panic Button")
@@ -190,31 +336,111 @@ class PurityTrayApp(BaseTrayApp):
         return self._client.audit_log
 
     def _poll(self) -> None:
-        """Update tray icon colour from heartbeat freshness."""
+        """Update tray tooltip from heartbeat freshness."""
         reader = self._client.heartbeat_reader
         _, mtime, exit_present = reader.read("purity_app")
 
         if mtime is None:
-            color = COLOR_GRAY
             tip = "Purity: not running"
         elif exit_present:
-            color = COLOR_GRAY
             tip = "Purity: stopped (expected exit)"
         elif reader.is_dead(mtime):
-            color = COLOR_RED
             tip = "Purity: DEAD"
         elif reader.is_stale(mtime):
-            color = COLOR_YELLOW
             tip = "Purity: STALE"
         else:
-            color = COLOR_GREEN
             tip = "Purity: running"
 
-        self._tray.setIcon(make_circle_icon(color))
         self._tray.setToolTip(tip)
 
         if self._status_window.isVisible():
             self._status_window.refresh()
+
+        self._poll_backup_staleness()
+        self._poll_recovery_drill_due()
+
+    def _poll_backup_staleness(self) -> None:
+        if self._settings_manager is None:
+            return
+        data_root = resolve_purity_data_root(self._settings_manager)
+        threshold = get_backup_stale_threshold_days(self._settings_manager)
+
+        destination = get_backup_local_destination(self._settings_manager)
+        if destination is not None:
+            stale = backup_health.is_stale(backup_state.load_state(data_root), threshold)
+            if stale and not self._local_backup_was_stale:
+                self.notify_running(
+                    f"No successful local backup in over {threshold} day(s).",
+                    title="Purity Backup",
+                )
+            self._local_backup_was_stale = stale
+
+        if get_dropbox_auth_state(self._settings_manager).value == "ready":
+            stale = backup_health.is_stale(backup_state.load_dropbox_state(data_root), threshold)
+            if stale and not self._dropbox_backup_was_stale:
+                self.notify_running(
+                    f"No successful Dropbox backup in over {threshold} day(s).",
+                    title="Purity Backup",
+                )
+            self._dropbox_backup_was_stale = stale
+
+    def _poll_recovery_drill_due(self) -> None:
+        """Reminds once when a recovery drill transitions healthy -> due.
+
+        Follows the same low-noise philosophy as ``_poll_backup_staleness``:
+        this is a passive reminder, not an automatic monthly drill — the user
+        still initiates the drill via the "Run Recovery Drill" button.
+        """
+        if self._settings_manager is None:
+            return
+        data_root = resolve_purity_data_root(self._settings_manager)
+        interval = get_backup_recovery_drill_interval_days(self._settings_manager)
+        runs = load_restore_state(data_root)
+
+        local_due = False
+        if get_backup_local_destination(self._settings_manager) is not None:
+            last = backup_health.last_successful_restore(runs, "local")
+            local_due = backup_health.is_recovery_drill_due(
+                last.get("completed_at") if last else None, interval_days=interval
+            )
+        local_transitioned = local_due and not self._local_drill_was_due
+        self._local_drill_was_due = local_due
+
+        dropbox_due = False
+        if get_dropbox_auth_state(self._settings_manager).value == "ready":
+            last = backup_health.last_successful_restore(runs, "dropbox")
+            dropbox_due = backup_health.is_recovery_drill_due(
+                last.get("completed_at") if last else None, interval_days=interval
+            )
+        dropbox_transitioned = dropbox_due and not self._dropbox_drill_was_due
+        self._dropbox_drill_was_due = dropbox_due
+
+        if local_transitioned and dropbox_transitioned:
+            self.notify_running(
+                f"LOCAL and Dropbox backups have not been recovery-verified within the last "
+                f"{interval} days.\n\nOpen Backup to run the drill.",
+                title="Disaster Recovery Drill Due",
+            )
+        elif local_transitioned:
+            self.notify_running(
+                f"Your local backup has not been recovery-verified within the last {interval} "
+                f"days.\n\nOpen Backup to run the drill.",
+                title="Disaster Recovery Drill Due",
+            )
+        elif dropbox_transitioned:
+            self.notify_running(
+                f"Your Dropbox backup has not been recovery-verified within the last {interval} "
+                f"days.\n\nOpen Backup to run the drill.",
+                title="Disaster Recovery Drill Due",
+            )
+
+    def _notify_backup_result(self, label: str, result) -> None:
+        if result.status == RunStatus.SUCCESS:
+            return
+        self.notify_running(
+            f"{label} backup {result.status.value.upper()}: {result.last_error or 'see Backup dialog for details'}",
+            title="Purity Backup",
+        )
 
     def _save_prefs(self) -> None:
         if self._panic_visible_action is None:
@@ -266,6 +492,23 @@ class PurityTrayApp(BaseTrayApp):
         else:
             self._status_window.show_and_raise()
 
+    def _toggle_backup_dialog(self) -> None:
+        if self._backup_controller is None or self._settings_manager is None:
+            return
+        if self._backup_dialog is None:
+            from ui.backup.backup_dialog import BackupDialog
+
+            self._backup_dialog = BackupDialog(
+                self._backup_controller,
+                self._settings_manager,
+                dropbox_controller=self._dropbox_controller,
+                recovery_drill_controller=self._recovery_drill_controller,
+            )
+        if self._backup_dialog.isVisible():
+            self._backup_dialog.hide()
+        else:
+            self._backup_dialog.show_and_raise()
+
     def notify_running(self, message: str, *, title: str = "Purity") -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
@@ -281,4 +524,17 @@ class PurityTrayApp(BaseTrayApp):
     def _request_reload(self) -> None:
         if self._reload_fn is None:
             return
+        self._reload_fn()
+
+    def _debug_mode_action_label(self) -> str:
+        if get_debug_mode_enabled(self._settings_manager):
+            return "Relaunch in Live"
+        return "Relaunch in Debug"
+
+    def _toggle_debug_mode(self) -> None:
+        if self._settings_manager is None or self._reload_fn is None:
+            return
+        set_debug_mode_enabled(self._settings_manager, not get_debug_mode_enabled(self._settings_manager))
+        if self._debug_mode_action is not None:
+            self._debug_mode_action.setText(self._debug_mode_action_label())
         self._reload_fn()

@@ -27,6 +27,7 @@ class Reminder(TypedDict, total=False):
     verse_refs: list       # list of {"key": "john_3_16", "display": "John 3:16"}
     subject: str           # optional reason ID (e.g. "tired") or "general"
     background: str        # optional filename from the image library (e.g. "forest.jpg")
+    use_for_web: bool      # if True, eligible for random selection on web launch
 
 
 # Bundled default lives alongside the rest of the app's static data.
@@ -77,6 +78,13 @@ class PanicReminders:
         if not self._reminders:
             return None
         return random.choice(self._reminders)  # type: ignore[return-value]
+
+    def get_random_web(self) -> Optional[Reminder]:
+        """Return a random reminder flagged ``use_for_web``, or ``None`` if none match."""
+        candidates = [r for r in self._reminders if r.get("use_for_web")]
+        if not candidates:
+            return None
+        return random.choice(candidates)  # type: ignore[return-value]
 
     def get_all(self) -> list[Reminder]:
         """Return a copy of all loaded reminders."""

@@ -12,6 +12,7 @@ from shane_common.preferences import SettingDefinition, SettingsCategory, Settin
 _CATEGORY_ID = "app.general"
 _TELEGRAM_CATEGORY_ID = "app.telegram"
 _PULSE_CATEGORY_ID = "app.pulse"
+_DIET_CATEGORY_ID = "app.diet"
 _DEFAULT_PERMITTED_BROWSERS = ["chrome.exe"]
 
 
@@ -78,6 +79,121 @@ def get_purity_general_category() -> SettingsCategory:
                     "after a panic session. (Stub — not yet wired to outbound infrastructure.)"
                 ),
             ),
+            SettingDefinition(
+                key="prayer_recipients_per_session",
+                type="int",
+                default=2,
+                label="# of Prayer Recipients per Session",
+                description=(
+                    "How many prayer recipients are drawn into a new prayer session "
+                    "each time a pulse fires."
+                ),
+            ),
+            SettingDefinition(
+                key="backup_local_destination",
+                type="str",
+                default="",
+                label="Local Backup Destination",
+                description=(
+                    "Root directory on a secondary drive where verified local backups are written."
+                ),
+            ),
+            SettingDefinition(
+                key="backup_selected_families",
+                type="list",
+                default=[],
+                label="Protected Data Selected For Backup",
+                description=(
+                    "Family names to include in local/Dropbox backups. Empty means all discovered "
+                    "protected data is included."
+                ),
+            ),
+            SettingDefinition(
+                key="backup_schedule_enabled",
+                type="bool",
+                default=False,
+                label="Enable Weekly Backup",
+                description="When enabled, a local backup runs automatically once per scheduled occurrence.",
+            ),
+            SettingDefinition(
+                key="backup_schedule_weekday",
+                type="int",
+                default=6,
+                label="Backup Weekday",
+                description="Day of week for the scheduled backup (0=Monday .. 6=Sunday). Default Sunday.",
+            ),
+            SettingDefinition(
+                key="backup_schedule_time",
+                type="str",
+                default="02:00",
+                label="Backup Time",
+                description="Local time of day (HH:MM, 24h) the scheduled backup becomes due.",
+            ),
+            SettingDefinition(
+                key="backup_schedule_timezone",
+                type="str",
+                default="",
+                label="Backup Timezone",
+                description="IANA timezone name for the schedule. Empty uses the system's local timezone.",
+            ),
+            SettingDefinition(
+                key="backup_stale_threshold_days",
+                type="int",
+                default=10,
+                label="Backup Stale Threshold (days)",
+                description=(
+                    "Local/Dropbox backup is flagged STALE if no successful run completed "
+                    "within this many days (weekly schedule + buffer, by default)."
+                ),
+            ),
+            SettingDefinition(
+                key="dropbox_backup_enabled",
+                type="bool",
+                default=False,
+                label="Enable Dropbox Backup",
+                description="When enabled, backups are also uploaded to Dropbox (independent of local backup).",
+            ),
+            SettingDefinition(
+                key="dropbox_app_key",
+                type="str",
+                default="",
+                label="Dropbox App Key",
+                description="App key from the Dropbox App Console. Not a secret; app secret is stored securely.",
+            ),
+            SettingDefinition(
+                key="dropbox_remote_folder",
+                type="str",
+                default="/PurityAppBackup",
+                label="Dropbox Remote Folder",
+                description="Destination folder path in the Dropbox account for backups.",
+            ),
+            SettingDefinition(
+                key="dropbox_auth_invalid",
+                type="bool",
+                default=False,
+                label="Dropbox Auth Invalid",
+                description="Internal flag set when Dropbox reports the stored credential is no longer valid.",
+            ),
+            SettingDefinition(
+                key="backup_recovery_drill_interval_days",
+                type="int",
+                default=30,
+                label="Recovery Drill Interval (days)",
+                description=(
+                    "Recommended interval between successful disaster-recovery drills for each "
+                    "backup destination (LOCAL/DROPBOX independently)."
+                ),
+            ),
+            SettingDefinition(
+                key="debug_mode_enabled",
+                type="bool",
+                default=False,
+                label="Debug Mode",
+                description=(
+                    "When enabled, the app relaunches using python.exe (console attached) instead of "
+                    "pythonw.exe. Persists across restarts until toggled back to Live."
+                ),
+            ),
         ],
     )
 
@@ -131,6 +247,22 @@ def get_purity_pulse_category() -> SettingsCategory:
     )
 
 
+def get_purity_diet_category() -> SettingsCategory:
+    return SettingsCategory(
+        category_id=_DIET_CATEGORY_ID,
+        label="Diet",
+        definitions=[
+            SettingDefinition(
+                key="daily_calories",
+                type="int",
+                default=2000,
+                label="Daily Calorie Budget",
+                description="Total calories permitted per day (the 'Y' in the dashboard's calorie label).",
+            ),
+        ],
+    )
+
+
 def build_purity_settings_manager(
     *,
     app_id: str = "purity_app",
@@ -143,6 +275,7 @@ def build_purity_settings_manager(
     manager.register_category(get_purity_general_category())
     manager.register_category(get_purity_telegram_category())
     manager.register_category(get_purity_pulse_category())
+    manager.register_category(get_purity_diet_category())
     manager.load()
     return manager
 
@@ -183,3 +316,91 @@ def get_web_session_timeout_seconds(settings_manager: SettingsManager) -> int:
         return int(settings_manager.get(_CATEGORY_ID, "web_session_timeout_seconds"))
     except (TypeError, ValueError):
         return 300
+
+
+def get_prayer_recipients_per_session(settings_manager: SettingsManager) -> int:
+    try:
+        return int(settings_manager.get(_CATEGORY_ID, "prayer_recipients_per_session"))
+    except (TypeError, ValueError):
+        return 2
+
+
+def get_backup_local_destination(settings_manager: SettingsManager) -> Path | None:
+    raw = str(settings_manager.get(_CATEGORY_ID, "backup_local_destination") or "").strip()
+    return Path(raw) if raw else None
+
+
+def get_backup_selected_families(settings_manager: SettingsManager) -> set[str]:
+    """Returns the persisted family selection. Empty means "all families"."""
+    raw = settings_manager.get(_CATEGORY_ID, "backup_selected_families") or []
+    return {str(name) for name in raw}
+
+
+def set_backup_selected_families(settings_manager: SettingsManager, families: set[str]) -> None:
+    settings_manager.set(_CATEGORY_ID, "backup_selected_families", sorted(families))
+    settings_manager.save()
+
+
+def get_backup_schedule_enabled(settings_manager: SettingsManager) -> bool:
+    return bool(settings_manager.get(_CATEGORY_ID, "backup_schedule_enabled"))
+
+
+def get_backup_schedule_weekday(settings_manager: SettingsManager) -> int:
+    try:
+        return int(settings_manager.get(_CATEGORY_ID, "backup_schedule_weekday"))
+    except (TypeError, ValueError):
+        return 6
+
+
+def get_backup_schedule_time(settings_manager: SettingsManager) -> str:
+    raw = str(settings_manager.get(_CATEGORY_ID, "backup_schedule_time") or "").strip()
+    return raw or "02:00"
+
+
+def get_backup_schedule_timezone(settings_manager: SettingsManager) -> str:
+    return str(settings_manager.get(_CATEGORY_ID, "backup_schedule_timezone") or "").strip()
+
+
+def get_backup_stale_threshold_days(settings_manager: SettingsManager) -> int:
+    try:
+        return int(settings_manager.get(_CATEGORY_ID, "backup_stale_threshold_days"))
+    except (TypeError, ValueError):
+        return 10
+
+
+def get_dropbox_backup_enabled(settings_manager: SettingsManager) -> bool:
+    return bool(settings_manager.get(_CATEGORY_ID, "dropbox_backup_enabled"))
+
+
+def get_dropbox_app_key(settings_manager: SettingsManager) -> str:
+    return str(settings_manager.get(_CATEGORY_ID, "dropbox_app_key") or "").strip()
+
+
+def get_dropbox_remote_folder(settings_manager: SettingsManager) -> str:
+    raw = str(settings_manager.get(_CATEGORY_ID, "dropbox_remote_folder") or "").strip()
+    return raw or "/PurityAppBackup"
+
+
+def get_dropbox_auth_invalid(settings_manager: SettingsManager) -> bool:
+    return bool(settings_manager.get(_CATEGORY_ID, "dropbox_auth_invalid"))
+
+
+def set_dropbox_auth_invalid(settings_manager: SettingsManager, value: bool) -> None:
+    settings_manager.set(_CATEGORY_ID, "dropbox_auth_invalid", bool(value))
+    settings_manager.save()
+
+
+def get_backup_recovery_drill_interval_days(settings_manager: SettingsManager) -> int:
+    try:
+        return int(settings_manager.get(_CATEGORY_ID, "backup_recovery_drill_interval_days"))
+    except (TypeError, ValueError):
+        return 30
+
+
+def get_debug_mode_enabled(settings_manager: SettingsManager) -> bool:
+    return bool(settings_manager.get(_CATEGORY_ID, "debug_mode_enabled"))
+
+
+def set_debug_mode_enabled(settings_manager: SettingsManager, value: bool) -> None:
+    settings_manager.set(_CATEGORY_ID, "debug_mode_enabled", bool(value))
+    settings_manager.save()

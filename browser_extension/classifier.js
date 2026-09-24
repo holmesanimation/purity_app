@@ -74,11 +74,22 @@ function expandPhrases(phraseList) {
  * // FUTURE: regex pattern support — add phraseEntry.regex field, test with RegExp(phraseEntry.regex)
  * // FUTURE: phrase groups — accumulate weight once per group, not per phrase
  */
+const wholeWordRegexCache = new WeakMap();
+
+function getWholeWordRegex(entry) {
+  let re = wholeWordRegexCache.get(entry);
+  if (!re) {
+    const escaped = entry.phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp('\\b' + escaped + '\\b');
+    wholeWordRegexCache.set(entry, re);
+  }
+  return re;
+}
+
 function matchPhrases(normalizedText, phraseList) {
   return phraseList.filter(entry => {
     if (entry.whole_word) {
-      const escaped = entry.phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp('\\b' + escaped + '\\b').test(normalizedText);
+      return getWholeWordRegex(entry).test(normalizedText);
     }
     return normalizedText.includes(entry.phrase);
   });

@@ -34,4 +34,25 @@ journal_notes_writer = NotesWriter(
     run_id="default",
 )
 
+prayer_notes_writer = NotesWriter(
+    notes_root=str(_NOTES_ROOT),
+    owner="Prayer",
+    platform="PurityApp",
+    run_id="default",
+)
+
+bible_notes_writer = NotesWriter(
+    notes_root=str(_NOTES_ROOT),
+    owner="Bible",
+    platform="PurityApp",
+    run_id="default",
+)
+
+diet_notes_writer = NotesWriter(
+    notes_root=str(_NOTES_ROOT),
+    owner="Diet",
+    platform="PurityApp",
+    run_id="default",
+)
+
 notes_repo = NotesRepository(_NOTES_ROOT)

@@ -15,11 +15,11 @@ Paste this into a new chat:
 Implement only Phase 0 and Phase 1 from [docs/TODO/2026-05-18_shane_common_plan.md](docs/TODO/2026-05-18_shane_common_plan.md).
 
 Constraints:
-- Do not modify trading_platform files while that project is still rooted at D:\code\git. After the folder move, treat D:\code\git\trading_platform as the repo root.
+- Do not modify trading_platform files while that project is still rooted at D:\code\git. After the folder move, treat D:\code\git_new as the repo root that contains trading_platform.
 - Keep shane_common dependency-neutral and standard-library-first.
 - Start from the most local code paths in purity_app that control config normalization, scripture selection, and JSONL path/log behavior.
 - Add the smallest useful characterization tests in purity_app first.
-- Then scaffold D:\code\git\shane_common with pyproject, src layout, README if needed, and initial pure utility modules/tests for time, JSON safety, atomic writes, JSON file helpers, JSON config store, and JSONL event writing.
+- Then scaffold D:\code\git_new\shane_common with pyproject, src layout, README if needed, and initial pure utility modules/tests for time, JSON safety, atomic writes, JSON file helpers, JSON config store, and JSONL event writing.
 - Do not migrate purity_app to use shane_common yet.
 - Validate with the narrowest relevant test commands after the first edit and again at the end.
 
@@ -66,7 +66,7 @@ Implement Phase 3 and the smallest justified part of Phase 4 from [docs/TODO/202
 Constraints:
 - Extract only generic Windows process/window primitives and process polling helpers into shane_common.
 - Keep Chrome-specific policy, UI, and purity-domain decisions inside purity_app.
-- Do not modify trading_platform files while that project is still rooted at D:\code\git. After the folder move, treat D:\code\git\trading_platform as the repo root.
+- Do not modify trading_platform files while that project is still rooted at D:\code\git. After the folder move, treat D:\code\git_new as the repo root that contains trading_platform.
 - After process helpers are integrated, reduce duplication across app.py, focus_guard.py, and focus_guard_chrome_trigger.py only as far as needed to converge on one canonical implementation path or clearly mark legacy wrappers.
 - Do not start notification or SQLite work.
 

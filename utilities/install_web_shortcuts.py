@@ -17,9 +17,17 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).parent.resolve()
-_PYTHONW = Path(sys.executable).parent / "pythonw.exe"
-if not _PYTHONW.exists():
-    _PYTHONW = Path(sys.executable)  # fall back to python.exe
+
+# Pinned to the venv that has PySide6 + dropbox installed, rather than
+# whatever interpreter happens to run this installer (which previously
+# baked a broken system Python into the shortcut).
+_REQUIRED_VENV_PYTHONW = Path(r"D:\code\git\.venv\Scripts\pythonw.exe")
+if _REQUIRED_VENV_PYTHONW.exists():
+    _PYTHONW = _REQUIRED_VENV_PYTHONW
+else:
+    _PYTHONW = Path(sys.executable).parent / "pythonw.exe"
+    if not _PYTHONW.exists():
+        _PYTHONW = Path(sys.executable)  # fall back to python.exe
 
 # Shortcut destination: %LOCALAPPDATA%\purity_app\shortcuts
 _SHORTCUTS_DIR = Path(os.environ["LOCALAPPDATA"]) / "purity_app" / "shortcuts"

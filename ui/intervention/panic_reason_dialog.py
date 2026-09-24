@@ -288,8 +288,8 @@ class PanicReasonDialog(BasePopup):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # ── 1. Reminder banner ────────────────────────────────────────
-        if self._reminder:
+        # ── 1. Reminder banner ─ only when a verse is actually attached ─
+        if self._reminder and self._reminder.get("verse_refs"):
             self._add_reminder_banner(self._reminder)
 
         # ── 2. Awareness copy (subtle, shown only when stats warrant it)
@@ -315,7 +315,7 @@ class PanicReasonDialog(BasePopup):
             f"  border-radius: 8px;"
             f"  color: {COLOR_TEXT};"
             f"  font-family: '{FONT_FAMILY}';"
-            f"  font-size: {_FS_SECTION_HEADER}pt;"
+            f"  font-size: {_FS_REMINDER_TITLE}pt;"
             f"  font-weight: 700;"
             f"  padding: 10px;"
             f"  text-align: center;"
@@ -364,8 +364,8 @@ class PanicReasonDialog(BasePopup):
         frame = QFrame()
         frame.setStyleSheet(_REMINDER_FRAME_STYLE)
         frame_layout = QVBoxLayout(frame)
-        frame_layout.setContentsMargins(14, 12, 14, 12)
-        frame_layout.setSpacing(4)
+        frame_layout.setContentsMargins(24, 0, 24, 0)
+        frame_layout.setSpacing(0)
 
         # Bold black title
         lbl_title = QLabel(reminder.get("title", ""))
@@ -373,17 +373,22 @@ class PanicReasonDialog(BasePopup):
         lbl_title.setStyleSheet(
             f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_TITLE}pt;"
             f"font-weight: 700; color: #1a1a1a; background: transparent; border: none;"
+            f"margin: 0; padding: 0;"
         )
+        lbl_title.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         frame_layout.addWidget(lbl_title)
+        self._reminder_title_label = lbl_title
 
-        # Regular-weight note
-        lbl_note = QLabel(reminder.get("note", ""))
-        lbl_note.setWordWrap(True)
-        lbl_note.setStyleSheet(
-            f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_NOTE}pt;"
-            f"color: {COLOR_TEXT}; background: transparent; border: none;"
-        )
-        frame_layout.addWidget(lbl_note)
+        # Regular-weight note — omit entirely when blank to avoid a layout gap
+        note_text = reminder.get("note", "")
+        if note_text:
+            lbl_note = QLabel(note_text)
+            lbl_note.setWordWrap(True)
+            lbl_note.setStyleSheet(
+                f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_NOTE}pt;"
+                f"color: {COLOR_TEXT}; background: transparent; border: none;"
+            )
+            frame_layout.addWidget(lbl_note)
 
         # Bold verse reference + italic verse text, looked up from BibleLibrary
         verse_refs = reminder.get("verse_refs") or []
@@ -405,8 +410,7 @@ class PanicReasonDialog(BasePopup):
                 lbl_verse.setWordWrap(True)
                 lbl_verse.setStyleSheet(
                     f"font-family: '{FONT_FAMILY}'; font-size: {_FS_REMINDER_VERSE}pt;"
-                    f"color: {COLOR_TEXT_MUTED}; background: transparent; border: none;"
-                    f"padding-top: 4px;"
+                    f"color: #1a1a1a; background: transparent; border: none;"
                 )
                 frame_layout.addWidget(lbl_verse)
 

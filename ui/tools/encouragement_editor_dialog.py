@@ -7,6 +7,7 @@ Open from the main window's Tools → Edit Encouragements menu item.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -14,8 +15,10 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -507,6 +510,10 @@ class EncouragementEditorDialog(QDialog):
         self._preview_btn.setStyleSheet(_BTN_PREVIEW)
         self._preview_btn.clicked.connect(self._on_preview_toggle)
         bg_fl.addWidget(self._preview_btn)
+        self._browse_bg_btn = QPushButton("Browse")
+        self._browse_bg_btn.setStyleSheet(_BTN_PREVIEW)
+        self._browse_bg_btn.clicked.connect(self._on_browse_background)
+        bg_fl.addWidget(self._browse_bg_btn)
         form.addRow(_label("Background"), bg_field)
         self._field_map[self._background_combo] = "background"
 
@@ -530,6 +537,14 @@ class EncouragementEditorDialog(QDialog):
         verses_fl.addWidget(self._verses_label, stretch=1)
         form.addRow(_label("Verses"), verses_row)
 
+        # Use when launching web
+        self._use_for_web_checkbox = QCheckBox("Use when launching web")
+        self._use_for_web_checkbox.setStyleSheet(
+            f"QCheckBox {{ color: {COLOR_TEXT}; font-family: '{FONT_FAMILY}';"
+            f" font-size: {FONT_SIZE_NORMAL}pt; background: transparent; }}"
+        )
+        form.addRow(_label(""), self._use_for_web_checkbox)
+
         rv.addLayout(form)
         rv.addStretch()
 
@@ -543,6 +558,11 @@ class EncouragementEditorDialog(QDialog):
         self._revert_btn.setVisible(False)
         self._revert_btn.clicked.connect(self._on_revert)
         btn_row.addWidget(self._revert_btn)
+
+        self._preview_encouragement_btn = QPushButton("Preview Encouragement")
+        self._preview_encouragement_btn.setStyleSheet(_BTN_CREATE)
+        self._preview_encouragement_btn.clicked.connect(self._on_preview_encouragement)
+        btn_row.addWidget(self._preview_encouragement_btn)
 
         self._save_btn = QPushButton("Save Encouragement")
         self._save_btn.setStyleSheet(_BTN_SAVE_NORMAL)
@@ -566,6 +586,7 @@ class EncouragementEditorDialog(QDialog):
         self._question_edit.textChanged.connect(self._on_any_field_changed)
         self._subject_combo.currentIndexChanged.connect(self._on_any_field_changed)
         self._background_combo.currentIndexChanged.connect(self._on_background_combo_changed)
+        self._use_for_web_checkbox.stateChanged.connect(self._on_any_field_changed)
 
         # Keep track of all editable detail widgets for enable/disable toggling
         self._detail_widgets: list[QWidget] = [
@@ -576,7 +597,10 @@ class EncouragementEditorDialog(QDialog):
             self._subject_combo,
             self._background_combo,
             self._preview_btn,
+            self._browse_bg_btn,
             self._choose_verses_btn,
+            self._use_for_web_checkbox,
+            self._preview_encouragement_btn,
             self._save_btn,
             self._delete_btn,
         ]
@@ -672,6 +696,10 @@ class EncouragementEditorDialog(QDialog):
         self._selected_verse_refs = list(reminder.get("verse_refs", []) or [])
         self._update_verses_label()
 
+        self._use_for_web_checkbox.blockSignals(True)
+        self._use_for_web_checkbox.setChecked(bool(reminder.get("use_for_web", False)))
+        self._use_for_web_checkbox.blockSignals(False)
+
         self._block_change_signals(False)
 
     def _clear_fields(self) -> None:
@@ -685,6 +713,9 @@ class EncouragementEditorDialog(QDialog):
         self._subject_combo.setCurrentIndex(0)
         self._background_combo.setCurrentIndex(0)
         self._block_change_signals(False)
+        self._use_for_web_checkbox.blockSignals(True)
+        self._use_for_web_checkbox.setChecked(False)
+        self._use_for_web_checkbox.blockSignals(False)
         self._selected_verse_refs = []
         self._update_verses_label()
 
@@ -697,6 +728,7 @@ class EncouragementEditorDialog(QDialog):
             "subject":    self._subject_combo.currentData() or "general",
             "background": self._background_combo.currentData(),
             "verse_refs": list(self._selected_verse_refs),
+            "use_for_web": self._use_for_web_checkbox.isChecked(),
         }
 
     def _block_change_signals(self, block: bool) -> None:
@@ -864,6 +896,8 @@ class EncouragementEditorDialog(QDialog):
                 default = "general"
             elif key == "background":
                 default = None
+            elif key == "use_for_web":
+                default = False
             elif key == "verse_refs":
                 orig_val = list(self._original_data.get("verse_refs", []) or [])
                 if value != orig_val:
@@ -925,7 +959,7 @@ class EncouragementEditorDialog(QDialog):
         data = self._collect_form_data()
 
         # Validate: all fields required except optional ones
-        _OPTIONAL = {"subject", "note", "background", "verse_refs"}
+        _OPTIONAL = {"subject", "note", "background", "verse_refs", "use_for_web"}
         missing = [k for k, v in data.items() if k not in _OPTIONAL and not v]
         if missing:
             QMessageBox.warning(
@@ -1104,6 +1138,50 @@ class EncouragementEditorDialog(QDialog):
             else:
                 self._close_preview()
 
+    def _on_browse_background(self) -> None:
+        """Open a file browser (always rooted at the backgrounds library) to pick an image."""
+        _BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
+        exts = " ".join(f"*{ext}" for ext in sorted(_IMAGE_EXTS))
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose Background Image",
+            str(_BACKGROUNDS_DIR),
+            f"Images ({exts})",
+        )
+        if not chosen:
+            return
+        chosen_path = Path(chosen)
+        if chosen_path.parent.resolve() != _BACKGROUNDS_DIR.resolve():
+            dest_path = _BACKGROUNDS_DIR / chosen_path.name
+            if dest_path.exists() and dest_path.resolve() != chosen_path.resolve():
+                base = dest_path.stem
+                suffix = dest_path.suffix
+                n = 1
+                while dest_path.exists():
+                    dest_path = _BACKGROUNDS_DIR / f"{base} ({n}){suffix}"
+                    n += 1
+            shutil.copy2(chosen_path, dest_path)
+            chosen_name = dest_path.name
+        else:
+            chosen_name = chosen_path.name
+
+        existing_names = {
+            self._background_combo.itemData(i)
+            for i in range(self._background_combo.count())
+        }
+        self._background_combo.blockSignals(True)
+        if chosen_name not in existing_names:
+            self._background_combo.addItem(chosen_name, userData=chosen_name)
+        idx = next(
+            (i for i in range(self._background_combo.count())
+             if self._background_combo.itemData(i) == chosen_name),
+            -1,
+        )
+        if idx >= 0:
+            self._background_combo.setCurrentIndex(idx)
+        self._background_combo.blockSignals(False)
+        self._on_background_combo_changed()
+
     def _on_preview_toggle(self, checked: bool) -> None:
         """Show or hide the full-screen background preview overlay."""
         if checked:
@@ -1133,3 +1211,54 @@ class EncouragementEditorDialog(QDialog):
             self._preview_overlay.hide()
         self._preview_btn.setChecked(False)
         self._preview_btn.setText("Preview")
+
+    # ------------------------------------------------------------------
+    # Encouragement preview (mirrors the real panic dialog)
+    # ------------------------------------------------------------------
+
+    def _on_preview_encouragement(self) -> None:
+        """Show the encouragement as it would appear from the panic button."""
+        from ui.intervention.panic_reason_dialog import PanicReasonDialog
+
+        data = self._collect_form_data()
+
+        data["note"] = ''
+
+        bg_overlay: Optional[_BackgroundPreviewOverlay] = None
+        bg_name = data.get("background")
+        if bg_name:
+            image_path = _BACKGROUNDS_DIR / bg_name
+            if image_path.exists():
+                bg_overlay = _BackgroundPreviewOverlay(image_path)
+                bg_overlay.show()
+
+        dlg = PanicReasonDialog(
+            stats=None, reminder=data, bible_library=self._bible_library, parent=self
+        )
+
+        title_label = getattr(dlg, "_reminder_title_label", None)
+        if title_label is not None:
+            title_label.hide()
+
+
+        dlg.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        dlg.setWindowFlags(
+            dlg.windowFlags() | Qt.WindowType.FramelessWindowHint
+        )
+        # Reuse our own dim+image overlay as the dialog's dim layer so only one dim is drawn.
+        if bg_overlay is not None:
+            dlg._overlay = bg_overlay
+        dlg._grid_widget.hide()
+        dlg._help_btn.hide()
+        dlg._feeling_btn.clicked.disconnect(dlg._reveal_feelings)
+        dlg._feeling_btn.setText(
+            self._question_edit.text().strip() or "(No question set)"
+        )
+        dlg._feeling_btn.clicked.connect(dlg.accept)
+
+        try:
+            dlg.exec()
+        finally:
+            if bg_overlay is not None:
+                bg_overlay.hide()
+                bg_overlay.deleteLater()

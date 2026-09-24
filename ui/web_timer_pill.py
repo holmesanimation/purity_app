@@ -54,6 +54,7 @@ class WebTimerPill(FloatingStatusPill):
         self._session_title: str = ""
         self._timeout_seconds = timeout_seconds
         self._remaining: int = timeout_seconds
+        self._static_mode: bool = False
         self._main_window = None  # set by caller
 
         self._tick_timer = QTimer(self)
@@ -102,6 +103,7 @@ class WebTimerPill(FloatingStatusPill):
 
     def start_session(self) -> None:
         """Start (or restart) a new countdown and make the pill visible."""
+        self._static_mode = False
         self._remaining = self._timeout_seconds
         self._resize_to_content()
         self._update_label()
@@ -114,6 +116,21 @@ class WebTimerPill(FloatingStatusPill):
             self.move(x, y)
         self.show()
         self._tick_timer.start()
+
+    def show_static(self) -> None:
+        """Show the pill with the session title but no running countdown."""
+        self._static_mode = True
+        self._tick_timer.stop()
+        self._resize_to_content()
+        text = self._session_title or "Web"
+        self.update_status(text, _COLOR_ACTIVE)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            sg = screen.availableGeometry()
+            x = sg.left() + (sg.width() - self.width()) // 2
+            y = sg.top() + 8
+            self.move(x, y)
+        self.show()
 
     def stop_session(self) -> None:
         """Hide and stop the countdown without emitting session_expired."""
@@ -143,14 +160,18 @@ class WebTimerPill(FloatingStatusPill):
         self._warning_flash_timer.start()
 
     def clear_extension_warning(self) -> None:
-        """Stop the extension warning and resume the normal session countdown."""
+        """Stop the extension warning and resume the normal session countdown (if any)."""
         if not self._warning_active:
             return
         self._warning_active = False
         self._warning_flash_timer.stop()
         self._warning_countdown_timer.stop()
-        self._update_label()
-        self._tick_timer.start()
+        if self._static_mode:
+            text = self._session_title or "Web"
+            self.update_status(text, _COLOR_ACTIVE)
+        else:
+            self._update_label()
+            self._tick_timer.start()
 
     # ------------------------------------------------------------------
     # Internal
@@ -158,22 +179,23 @@ class WebTimerPill(FloatingStatusPill):
 
     def _warning_flash_tick(self) -> None:
         self._warning_flash_count += 1
-        # Alternate between the red warning and the normal countdown label.
+        # Alternate between the red warning and the normal label.
         if self._warning_flash_count % 2 == 0:
-            self._update_label()
+            if self._static_mode:
+                self.update_status(self._session_title or "Web", _COLOR_ACTIVE)
+            else:
+                self._update_label()
         else:
             self.update_status("Extension off", _COLOR_EXPIRED)
         if self._warning_flash_count >= self._warning_flash_max:
             self._warning_flash_timer.stop()
-            mins, secs = divmod(self._warning_remaining, 60)
-            self.update_status(f"Re-enable ext: {mins}:{secs:02d}", _COLOR_EXPIRED)
+            self.update_status("Re-enable extension", _COLOR_EXPIRED)
             self._warning_countdown_timer.start()
 
     def _warning_countdown_tick(self) -> None:
         self._warning_remaining -= 1
         if self._warning_remaining > 0:
-            mins, secs = divmod(self._warning_remaining, 60)
-            self.update_status(f"Re-enable ext: {mins}:{secs:02d}", _COLOR_EXPIRED)
+            self.update_status("Re-enable extension", _COLOR_EXPIRED)
         else:
             self._warning_countdown_timer.stop()
             self._warning_active = False

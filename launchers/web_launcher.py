@@ -19,8 +19,10 @@ import traceback
 # Allow running as a standalone script from any working directory.
 _HERE = Path(__file__).parent.resolve()
 _PROJECT_ROOT = _HERE.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_WORKSPACE_ROOT = _PROJECT_ROOT.parent
+for _path in (_PROJECT_ROOT, _WORKSPACE_ROOT, _WORKSPACE_ROOT / "shane_common" / "src"):
+    if _path.exists() and str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from services.web_requests import (  # noqa: E402
     append_web_request_log,

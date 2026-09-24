@@ -155,15 +155,33 @@
   function observeInputs() {
     scanAndAttach(document);
 
+    // Batch added nodes and process once per animation frame instead of per
+    // mutation record, so bursts of DOM churn on JS-heavy pages don't run a
+    // full querySelectorAll scan on every single MutationObserver callback.
+    const pendingNodes = new Set();
+    let scanScheduled = false;
+
+    function flushPendingNodes() {
+      scanScheduled = false;
+      for (const node of pendingNodes) {
+        if (node.matches(INPUT_SELECTOR)) {
+          attachListener(node);
+        }
+        scanAndAttach(node);
+      }
+      pendingNodes.clear();
+    }
+
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node.nodeType !== Node.ELEMENT_NODE) continue;
-          if (node.matches(INPUT_SELECTOR)) {
-            attachListener(node);
-          }
-          scanAndAttach(node);
+          pendingNodes.add(node);
         }
+      }
+      if (!scanScheduled && pendingNodes.size) {
+        scanScheduled = true;
+        requestAnimationFrame(flushPendingNodes);
       }
     });
 

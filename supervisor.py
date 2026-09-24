@@ -28,6 +28,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+from shane_common.processes.windows import has_visible_window, taskkill_processes
 from shane_common.watchdog.heartbeat_reader import HeartbeatReader
 from shane_common.watchdog.heartbeat_writer import HeartbeatWriter
 from shane_common.watchdog.process_launcher import ProcessLauncher, ProcessLaunchConfig
@@ -43,9 +44,11 @@ from services.telegram_notify import (
     build_telegram_adapter_from_settings,
     make_lifecycle_event,
 )
+from services.web_watcher import _WATCHED_BROWSERS
 
 _SUPERVISOR_APP_ID = "purity_supervisor"
 _POLL_INTERVAL_MS = 5_000
+_BROWSER_GUARD_POLL_MS = 2_000
 _STALE_S = 15.0
 _DEAD_S = 30.0
 
@@ -277,6 +280,38 @@ def main() -> int:
     poll_timer.timeout.connect(_poll)
     poll_timer.start()
     QTimer.singleShot(0, _poll)
+
+    # --- Browser guard: kill chrome/msedge while purity_app isn't running ----
+    # purity_app-specific behavior; kept out of shane_common on purpose so
+    # other supervised apps don't inherit a "block these browsers" feature.
+    _browser_state: dict[str, bool] = {exe: False for exe in _WATCHED_BROWSERS}
+
+    def _poll_browser_guard() -> None:
+        _, mtime, exit_present = reader.read("purity_app")
+        app_is_down = exit_present or mtime is None or reader.is_dead(mtime)
+        if not app_is_down:
+            for exe in _WATCHED_BROWSERS:
+                _browser_state[exe] = False
+            return
+
+        for exe in _WATCHED_BROWSERS:
+            is_running = has_visible_window(exe)
+            if is_running and not _browser_state[exe]:
+                _log_supervisor(data_root, f"Blocking {exe} — purity_app is not running.")
+                taskkill_processes([exe])
+                tray.showMessage(
+                    "Purity",
+                    f"{exe} was closed because the Purity App is not running.",
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    5000,
+                )
+            _browser_state[exe] = is_running
+
+    browser_guard_timer = QTimer()
+    browser_guard_timer.setInterval(_BROWSER_GUARD_POLL_MS)
+    browser_guard_timer.timeout.connect(_poll_browser_guard)
+    browser_guard_timer.start()
+    QTimer.singleShot(0, _poll_browser_guard)
 
     def _on_about_to_quit() -> None:
         _send_telegram_notification(data_root, settings_manager, "purity_supervisor.shutdown", "reason=qt.shutdown")

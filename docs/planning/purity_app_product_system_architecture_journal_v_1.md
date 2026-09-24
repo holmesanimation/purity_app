@@ -736,7 +736,7 @@ git/
   trading_platform/
 ```
 
-Current temporary exception: trading_platform is still running from `D:\code\git` and should be treated that way until its files are moved into `D:\code\git\trading_platform`.
+Current temporary exception: trading_platform is still running from `D:\code\git` and should be treated that way until its files are moved under `D:\code\git_new`.
 
 ## Purpose
 

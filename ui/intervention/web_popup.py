@@ -7,7 +7,7 @@ import traceback
 from pathlib import Path
 from typing import Iterable, Optional
 
-from PySide6.QtCore import Qt, QPoint, QRect, QPropertyAnimation, QEasingCurve, QByteArray
+from PySide6.QtCore import Qt, QPoint, QRect, QPropertyAnimation, QEasingCurve, QByteArray, QTimer
 from PySide6.QtGui import QColor, QPainter, QKeyEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -384,6 +384,7 @@ class WebPopup(BasePopup):
         # reason_id → {btn, slot, card}  (populated in _add_feelings_section)
         self._active: dict[str, dict] = {}
         self._overlay: Optional[_ScreenDimOverlay] = None
+        self._commit_delay_elapsed: bool = False
 
         if permitted:
             self.setFixedWidth(self.DEFAULT_WIDTH)
@@ -705,7 +706,19 @@ class WebPopup(BasePopup):
         self.activateWindow()
         if getattr(self, "_keyword_input", None) is not None:
             self._keyword_input.setFocus()
+        # Keyword-gated form starts the delay once the commit button is actually visible.
+        if getattr(self, "_commit_btn", None) is not None and not self._verse_keyword:
+            self._start_commit_delay()
         super().showEvent(event)
+
+    def _start_commit_delay(self) -> None:
+        if self._commit_delay_elapsed:
+            return
+        QTimer.singleShot(5000, self._on_commit_delay_elapsed)
+
+    def _on_commit_delay_elapsed(self) -> None:
+        self._commit_delay_elapsed = True
+        self._sync_commit_enabled()
 
     def done(self, result: int) -> None:
         self._close_all_cards()
@@ -732,6 +745,7 @@ class WebPopup(BasePopup):
         if self._session_form_widget.isVisible():
             return
         self._animate_form_open()
+        self._start_commit_delay()
 
     def _animate_form_open(self) -> None:
         # Show the form unconstrained so the layout can compute its natural size.
@@ -845,7 +859,8 @@ class WebPopup(BasePopup):
 
     def _sync_commit_enabled(self) -> None:
         enabled = (
-            _is_proper_sentence(self._reason_edit.toPlainText())
+            self._commit_delay_elapsed
+            and _is_proper_sentence(self._reason_edit.toPlainText())
             and bool(self._selected_internet_reason)
         )
         self._commit_btn.setEnabled(enabled)

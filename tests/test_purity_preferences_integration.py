@@ -27,6 +27,7 @@ class _FakeWebWatcherService:
     def __init__(self, parent=None):
         self.parent = parent
         self.web_opened = _FakeSignal()
+        self.browser_running_changed = _FakeSignal()
 
     def start(self) -> None:
         return None
@@ -39,44 +40,6 @@ class _FakePanicButton:
 
     def set_elevated(self, _value: bool) -> None:
         return None
-
-
-class _FakePulseDialog:
-    instances: list["_FakePulseDialog"] = []
-
-    def __init__(
-        self,
-        *,
-        pending,
-        submit_pulse,
-        submit_note,
-        send_reach_out,
-        parent=None,
-    ) -> None:
-        self.pending = pending
-        self.submit_pulse = submit_pulse
-        self.submit_note = submit_note
-        self.send_reach_out = send_reach_out
-        self.parent = parent
-        self.finished = _FakeSignal()
-        self._visible = False
-        self.raise_calls = 0
-        self.activate_calls = 0
-        self.show_calls = 0
-        self.__class__.instances.append(self)
-
-    def isVisible(self) -> bool:
-        return self._visible
-
-    def show(self) -> None:
-        self.show_calls += 1
-        self._visible = True
-
-    def raise_(self) -> None:
-        self.raise_calls += 1
-
-    def activateWindow(self) -> None:
-        self.activate_calls += 1
 
 
 def test_main_uses_settings_resolved_data_root(monkeypatch, tmp_path: Path) -> None:
@@ -231,20 +194,25 @@ def test_main_window_builds_preferences_menu(monkeypatch, tmp_path: Path) -> Non
     window.close()
 
 
-def test_main_window_opens_due_pulse_once_and_raises_existing_dialog(
+def test_main_window_opens_due_pulse_expands_dashboard_and_submits(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     _app()
     monkeypatch.setattr(main_window_module, "WebWatcherService", _FakeWebWatcherService)
     monkeypatch.setattr(main_window_module, "PanicButton", _FakePanicButton)
-    monkeypatch.setattr(main_window_module, "PulseDialog", _FakePulseDialog)
     monkeypatch.setattr(main_window_module.MainWindow, "_center_on_screen", lambda self: None)
     monkeypatch.setattr(main_window_module.MainWindow, "_kill_browsers_on_startup", lambda self: None)
-    _FakePulseDialog.instances = []
 
     settings_manager = app_module.build_purity_settings_manager(path=tmp_path / "settings.yaml")
     window = main_window_module.MainWindow(runtime=None, settings_manager=settings_manager)
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(
+        window._left_dock, "start_prayer_session", lambda names: calls.__setitem__("names", names)
+    )
+    monkeypatch.setattr(window._left_dock, "expand", lambda: calls.__setitem__("expanded", True))
+
     pending = PendingPulse(
         pulse_id="pulse-1",
         pulse_kind=PulseKind.MORNING,
@@ -263,19 +231,15 @@ def test_main_window_opens_due_pulse_once_and_raises_existing_dialog(
         def poll_due_pulse(self):
             return pending
 
+        def submit_pulse(self, **kwargs):
+            calls["submit_pulse"] = kwargs
+
     window._pulse_manager = _FakePulseManager()
 
     window._poll_pulse_due()
-    assert len(_FakePulseDialog.instances) == 1
-    dialog = _FakePulseDialog.instances[0]
-    assert dialog.pending is pending
-    assert dialog.show_calls == 1
-    assert dialog.raise_calls == 1
-    assert dialog.activate_calls == 1
 
-    window._poll_pulse_due()
-    assert len(_FakePulseDialog.instances) == 1
-    assert dialog.raise_calls == 2
-    assert dialog.activate_calls == 2
+    assert calls["expanded"] is True
+    assert calls["names"] == []
+    assert calls["submit_pulse"]["pending"] is pending
 
     window.close()
