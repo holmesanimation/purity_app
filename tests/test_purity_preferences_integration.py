@@ -74,6 +74,9 @@ def test_main_uses_ui_main_window_class(monkeypatch, tmp_path: Path) -> None:
         def __init__(self, _argv):
             self.aboutToQuit = _FakeSignal()
 
+        def setWindowIcon(self, _icon) -> None:
+            return None
+
         def setStyleSheet(self, _style: str) -> None:
             return None
 
@@ -92,6 +95,7 @@ def test_main_uses_ui_main_window_class(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(app_module, "_find_running_instance", lambda data_root: None)
     monkeypatch.setattr(app_module, "_is_supervisor_running", lambda data_root: True)
     monkeypatch.setattr(app_module, "QApplication", _FakeApp)
+    monkeypatch.setattr(app_module, "_app_icon", lambda: None)
     monkeypatch.setattr(app_module, "NotesContextMenuFilter", lambda app: SimpleNamespace())
 
     class _FakeHeartbeat:

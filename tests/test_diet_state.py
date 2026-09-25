@@ -1,4 +1,7 @@
-from services.diet_state import DietState
+import time
+from types import SimpleNamespace
+
+from services.diet_state import DietState, calories_today_from_notes
 
 
 def test_diet_state_round_trip(tmp_path):
@@ -8,22 +11,36 @@ def test_diet_state_round_trip(tmp_path):
     state.set_water_count(5)
     state.set_vitamins_taken(True)
 
-    entry_id = state.add_calorie_entry("2 eggs and toast")
-    assert state.pending_or_failed_entries_today()[0]["entry_id"] == entry_id
-    assert state.total_calories_today() == 0
-
-    state.resolve_calorie_entry(entry_id, 350.0)
-    assert state.total_calories_today() == 350.0
-    assert not state.has_failed_entries_today()
-
-    entry_id_2 = state.add_calorie_entry("a burger")
-    state.fail_calorie_entry(entry_id_2)
-    assert state.has_failed_entries_today()
-    assert [e["entry_id"] for e in state.pending_or_failed_entries_today()] == [entry_id_2]
-
-    # Reload from disk to confirm persistence.
     reloaded = DietState(tmp_path)
     day = reloaded.get_today()
     assert day["water_count"] == 5
     assert day["vitamins_taken"] is True
-    assert reloaded.total_calories_today() == 350.0
+
+
+def _row(ts, note_id, rev, calories, wall_ts=None):
+    ctx = {"note_id": note_id, "revision_num": rev}
+    if calories is not None:
+        ctx["calories"] = calories
+    return SimpleNamespace(
+        ts=ts, wall_ts=time.time() if wall_ts is None else wall_ts,
+        context=ctx, note_id=None, revision_num=None,
+    )
+
+
+def test_calories_today_from_notes_dedups_revisions():
+    rows = [
+        _row(1, "a", 1, 300.0),
+        _row(2, "a", 2, 450.0),  # edit supersedes revision 1
+        _row(3, "b", 1, 100.0),
+        _row(4, "c", 1, None),  # no calories
+        _row(5, "d", 1, 999.0, wall_ts=time.time() - 3 * 86400),  # not today
+    ]
+    repo = SimpleNamespace(rows_for_owner=lambda owner: rows)
+    assert calories_today_from_notes(repo) == 550.0
+
+
+def test_calories_today_ignores_cleared_calories():
+    rows = [_row(1, "a", 1, 300.0), _row(2, "a", 2, None)]
+    rows[1].context["calories"] = None
+    repo = SimpleNamespace(rows_for_owner=lambda owner: rows)
+    assert calories_today_from_notes(repo) == 0.0

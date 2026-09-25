@@ -14,7 +14,6 @@ Clicking the tab toggles between the two states.
 from __future__ import annotations
 
 import random
-import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -50,11 +49,10 @@ from PySide6.QtWidgets import (
 )
 
 from services.bible_canon import BOOK_KEYS, CANON, display_ref, normalize_ref
-from services.diet_state import DietState
+from services.diet_state import DietState, calories_today_from_notes
 from services.fake_journal import FakeJournalService
 from services.mock_state import MockAppState
 from services.notes_setup import bible_notes_writer, journal_notes_writer, notes_repo, prayer_notes_writer as _default_prayer_notes_writer
-from services.openai_client import CalorieEstimationError, estimate_calories
 from services.tag_library import TagLibrary
 from shane_common.notes.notes_writer import NoteType
 from models.journal import JournalEntry
@@ -1421,17 +1419,20 @@ def _load_diet_icon(kind: str, checked: bool) -> QIcon:
 class _DietHealthSection(QWidget):
     """Health row: water/vitamin toggles, and a calorie budget tracker.
 
-    ``diet_state`` persists water/vitamin/calorie data per calendar day.
+    ``diet_state`` persists water/vitamin data per calendar day; today's
+    calories are derived from Diet notes via ``notes_repo``.
     """
 
     def __init__(
         self,
         diet_state: DietState,
+        notes_repo,
         daily_calorie_budget: int = 2000,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._diet_state = diet_state
+        self._notes_repo = notes_repo
         self._daily_calorie_budget = daily_calorie_budget
         self._water_btns: list[QPushButton] = []
         self._vitamin_btn: Optional[QPushButton] = None
@@ -1483,7 +1484,7 @@ class _DietHealthSection(QWidget):
         calorie_row.addWidget(self._calories_lbl)
 
         self._calories_warning_lbl = QLabel("\u26A0")
-        self._calories_warning_lbl.setToolTip("Calorie estimation failed — will retry on next pulse.")
+        self._calories_warning_lbl.setToolTip("Exceeds your daily calorie budget.")
         self._calories_warning_lbl.setStyleSheet("color: #eb5757; font-size: 14pt; background: transparent;")
         self._calories_warning_lbl.setVisible(False)
         calorie_row.addWidget(self._calories_warning_lbl)
@@ -1511,7 +1512,6 @@ class _DietHealthSection(QWidget):
         from ui.notes.calories_dialog import CaloriesDialog
 
         CaloriesDialog(
-            diet_state=self._diet_state,
             on_result_changed=self.refresh,
             parent=self.window(),
         ).exec()
@@ -1539,22 +1539,9 @@ class _DietHealthSection(QWidget):
             self._vitamin_btn.blockSignals(False)
             self._vitamin_btn.setIcon(_load_diet_icon("vitamin", vitamins_taken))
 
-        total = int(self._diet_state.total_calories_today())
+        total = int(calories_today_from_notes(self._notes_repo))
         self._calories_lbl.setText(f"{total} of {self._daily_calorie_budget} calories")
-        self._calories_warning_lbl.setVisible(self._diet_state.has_failed_entries_today())
-
-    # -- pulse-triggered retry -----------------------------------------
-
-    def retry_failed_calories(self) -> None:
-        for entry in self._diet_state.pending_or_failed_entries_today():
-            try:
-                calories = estimate_calories(entry["text"])
-            except CalorieEstimationError:
-                traceback.print_exc()
-                self._diet_state.fail_calorie_entry(entry["entry_id"])
-                continue
-            self._diet_state.resolve_calorie_entry(entry["entry_id"], calories)
-        self.refresh()
+        self._calories_warning_lbl.setVisible(total > self._daily_calorie_budget)
 
 
 # ---------------------------------------------------------------------------
@@ -1634,7 +1621,7 @@ class LeftDockDashboard(QWidget):
 
         diet_state = self._main_window._get_diet_state() if self._main_window is not None else DietState(Path.home() / ".purity")
         daily_budget = self._main_window._get_daily_calorie_budget() if self._main_window is not None else 2000
-        self._diet_section = _DietHealthSection(diet_state=diet_state, daily_calorie_budget=daily_budget)
+        self._diet_section = _DietHealthSection(diet_state=diet_state, notes_repo=notes_repo, daily_calorie_budget=daily_budget)
         inner_layout.addWidget(self._diet_section)
 
         self._scroll.setWidget(inner)
@@ -1814,10 +1801,6 @@ class LeftDockDashboard(QWidget):
     def start_prayer_session(self, names: list[str]) -> None:
         """Reset the prayer card with a new session's recipient names."""
         self._prayer_card.start_session(names)
-
-    def retry_failed_diet_calories(self) -> None:
-        """Re-attempt any pending/failed calorie estimates — called on every Pulse."""
-        self._diet_section.retry_failed_calories()
 
     def _request_new_prayer_session(self) -> None:
         if self._main_window is not None:

@@ -8,29 +8,25 @@ Schema::
 
     {"days": {"YYYY-MM-DD": {
         "water_count": int,
-        "vitamins_taken": bool,
-        "calorie_entries": [
-            {"entry_id": str, "note_id": str, "text": str,
-             "calories": float | null, "status": "pending"|"done"|"failed",
-             "created_ts": float}
-        ]
+        "vitamins_taken": bool
     }}}
+
+Calories are not stored here; see ``calories_today_from_notes``.
 """
 
 from __future__ import annotations
 
 import json
-import time
 import traceback
-import uuid
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from shane_common.io.atomic import write_json_atomic
+from shane_common.notes.notes_repository import latest_revisions
 
 
 def _empty_day() -> dict:
-    return {"water_count": 0, "vitamins_taken": False, "calorie_entries": []}
+    return {"water_count": 0, "vitamins_taken": False}
 
 
 class DietState:
@@ -75,50 +71,15 @@ class DietState:
     def set_vitamins_taken(self, taken: bool) -> None:
         self._update_today(lambda day: day.__setitem__("vitamins_taken", bool(taken)))
 
-    def add_calorie_entry(self, text: str, note_id: str = "") -> str:
-        entry_id = uuid.uuid4().hex
-        entry = {
-            "entry_id": entry_id,
-            "note_id": note_id,
-            "text": text,
-            "calories": None,
-            "status": "pending",
-            "created_ts": time.time(),
-        }
-        self._update_today(lambda day: day["calorie_entries"].append(entry))
-        return entry_id
 
-    def resolve_calorie_entry(self, entry_id: str, calories: float) -> None:
-        def _mutate(day: dict) -> None:
-            for entry in day["calorie_entries"]:
-                if entry["entry_id"] == entry_id:
-                    entry["calories"] = float(calories)
-                    entry["status"] = "done"
-                    break
-
-        self._update_today(_mutate)
-
-    def fail_calorie_entry(self, entry_id: str) -> None:
-        def _mutate(day: dict) -> None:
-            for entry in day["calorie_entries"]:
-                if entry["entry_id"] == entry_id:
-                    entry["status"] = "failed"
-                    break
-
-        self._update_today(_mutate)
-
-    def total_calories_today(self) -> float:
-        day = self.get_today()
-        return sum(
-            float(entry["calories"])
-            for entry in day["calorie_entries"]
-            if entry["status"] == "done" and entry["calories"] is not None
-        )
-
-    def has_failed_entries_today(self) -> bool:
-        day = self.get_today()
-        return any(entry["status"] == "failed" for entry in day["calorie_entries"])
-
-    def pending_or_failed_entries_today(self) -> list[dict]:
-        day = self.get_today()
-        return [entry for entry in day["calorie_entries"] if entry["status"] in ("pending", "failed")]
+def calories_today_from_notes(notes_repo, owner: str = "Diet") -> float:
+    """Sum today's calories from *owner*'s notes, latest revision per note only."""
+    today = date.today()
+    total = 0.0
+    for row in latest_revisions(notes_repo.rows_for_owner(owner)):
+        if row.wall_ts is None or datetime.fromtimestamp(row.wall_ts).date() != today:
+            continue
+        calories = (row.context or {}).get("calories")
+        if isinstance(calories, (int, float)) and not isinstance(calories, bool):
+            total += float(calories)
+    return total

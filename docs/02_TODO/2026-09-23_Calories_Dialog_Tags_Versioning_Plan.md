@@ -34,6 +34,13 @@
   than the earlier in-place-rewrite plan.
 
 ## Phase A — shane_common: generic versioning support in the shared `NoteDialog` base
+**STATUS: COMPLETE (2026-09-24).** Implemented in `notes_repository.py` (helpers) and
+`note_dialog.py` (hooks, context menu, `_EditNoteDialog`, id/revision injection, dedup).
+Verified: module imports; `latest_revisions` dedup checked with a small script. Not yet
+verified: GUI smoke test, pytest suite.
+Carry-over for Phase C: edit-merge keeps old `calories` when the field is cleared, so
+`_extra_edit_widget_get_context` must signal an explicit clear (e.g. `{"calories": None}`,
+and consumers must treat `None` as no calories).
 1. `shane_common/src/shane_common/notes/notes_writer.py`
    — **no changes**. `Note`/`commit()` stay exactly as-is; `note_id`/`revision_num`/`op` live
    entirely inside the existing freeform `context` dict, so no dataclass/schema change is needed.

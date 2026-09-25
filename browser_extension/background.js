@@ -26,6 +26,7 @@ const HEARTBEAT_PERIOD_MINUTES = 0.5;
 let currentSession = { is_active: false };
 let blacklistedDomains = [];
 const blockedByTabId = new Map();
+const approvedSoftRiskSearchByTabId = new Map();
 let ruleUpdateChain = Promise.resolve();
 
 async function getInstanceId() {
@@ -219,6 +220,11 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     return;
   }
   void sendHeartbeat();
+  const approvedUrl = approvedSoftRiskSearchByTabId.get(details.tabId);
+  approvedSoftRiskSearchByTabId.delete(details.tabId);
+  if (approvedUrl === details.url) {
+    return;
+  }
   const searchQuery = extractSearchQuery(details.url);
   if (searchQuery) {
     await loadConfig(); // no-op if already loaded; ensures soft_risk phrases are available
@@ -333,6 +339,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "get-blocked-url") {
     sendResponse({ url: blockedByTabId.get(sender.tab?.id) || "" });
+    return;
+  }
+
+  if (message?.type === "approve-soft-risk-search") {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== "number" || typeof message.url !== "string") {
+      sendResponse({ approved: false });
+      return;
+    }
+    approvedSoftRiskSearchByTabId.set(tabId, message.url);
+    sendResponse({ approved: true });
     return;
   }
 });

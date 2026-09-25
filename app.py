@@ -1408,6 +1408,13 @@ class MainWindow(QMainWindow):
         self.hide()
 
 
+def _app_icon() -> QIcon:
+    icon = QIcon()
+    for size in (16, 32, 48):
+        icon.addFile(str(_HERE / "ui" / "icons" / f"icon_{size}x{size}.png"))
+    return icon
+
+
 def main():
     from services.runtime import create_purity_runtime
     from services.journal_events import emit_app_started, emit_app_stopped
@@ -1437,7 +1444,15 @@ def main():
 
     _append_startup_log(data_root, "Mutex gate: acquired - proceeding with startup.")
 
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Purity.App")
+        except Exception:
+            traceback.print_exc()
+
     app = QApplication(sys.argv)
+    app.setWindowIcon(_app_icon())
     app.setStyleSheet(GLOBAL_QSS)
     app.setQuitOnLastWindowClosed(False)
     _append_startup_log(data_root, "QApplication created.")

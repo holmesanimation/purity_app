@@ -25,7 +25,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (history.length > 1) { history.back(); } else { window.close(); }
     });
     document.getElementById("warn-proceed-btn").addEventListener("click", () => {
-      if (url) { window.location.replace(url); } else { history.back(); }
+      if (!url) {
+        history.back();
+        return;
+      }
+      chrome.runtime.sendMessage(
+        { type: "approve-soft-risk-search", url },
+        (response) => {
+          if (chrome.runtime.lastError || !response?.approved) {
+            console.error(
+              "Purity could not approve this search:",
+              chrome.runtime.lastError?.message || "No approval response."
+            );
+            return;
+          }
+          window.location.replace(url);
+        }
+      );
     });
   } else if (reason === "query") {
     // Search query block mode

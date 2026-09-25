@@ -47,7 +47,7 @@ def get_purity_general_category() -> SettingsCategory:
                 default=True,
                 label="Kill Browsers On Startup",
                 description=(
-                    "When enabled, watched browsers are closed during startup so the watcher starts clean."
+                    "When enabled, non-permitted watched browsers are closed during startup. Permitted browsers (Chrome) are never closed; a running one is adopted with a new web session."
                 ),
             ),
             SettingDefinition(

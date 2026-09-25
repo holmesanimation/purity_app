@@ -199,14 +199,21 @@ class _BrowserKillWorker(QObject):
     """Runs taskkill_processes off the UI thread (subprocess spawns are slow)."""
 
     finished = Signal()
+    adopt_browser = Signal(str)  # a permitted browser already running; left open
 
-    def __init__(self, browsers: list[str]):
+    def __init__(self, kill: list[str], keep: list[str]):
         super().__init__()
-        self._browsers = browsers
+        self._kill = kill
+        self._keep = keep
 
     def run(self) -> None:
-        from shane_common.processes.windows import taskkill_processes
-        taskkill_processes(self._browsers)
+        from shane_common.processes.windows import has_visible_window, taskkill_processes
+        if self._kill:
+            taskkill_processes(self._kill)
+        for exe in self._keep:
+            if has_visible_window(exe):
+                self.adopt_browser.emit(exe)
+                break
         self.finished.emit()
 
 
@@ -801,18 +808,29 @@ class MainWindow(QMainWindow):
             emit_system_alive(self._runtime.journal)
 
     def _kill_browsers_on_startup(self):
-        """Kill any browsers already open when the app launches so the watcher starts fresh.
+        """Kill non-permitted browsers already open when the app launches.
+
+        Permitted browsers (e.g. Chrome) are never closed; if one is already
+        running it is adopted by starting a fresh web session for it, so the
+        extension has a session after an app relaunch.
 
         Runs on a background thread since taskkill spawns are slow; web-launch-request
         approval is gated on completion (see ``_on_browser_kill_finished``) so a
         legitimately-approved shortcut launch can't race a stale-browser kill.
         """
-        if not self._kill_browsers_on_startup_enabled:
+        from services.web_watcher import _WATCHED_BROWSERS
+        keep = [b for b in _WATCHED_BROWSERS if b in self._permitted_browsers]
+        kill = (
+            [b for b in _WATCHED_BROWSERS if b not in self._permitted_browsers]
+            if self._kill_browsers_on_startup_enabled
+            else []
+        )
+        if not kill and not keep:
             self._web_request_timer_ready = True
             return
-        from services.web_watcher import _WATCHED_BROWSERS
         self._browser_kill_thread = QThread(self)
-        self._browser_kill_worker = _BrowserKillWorker(list(_WATCHED_BROWSERS))
+        self._browser_kill_worker = _BrowserKillWorker(kill, keep)
+        self._browser_kill_worker.adopt_browser.connect(self._on_adopt_running_browser)
         self._browser_kill_worker.moveToThread(self._browser_kill_thread)
         self._browser_kill_thread.started.connect(self._browser_kill_worker.run)
         self._browser_kill_worker.finished.connect(self._on_browser_kill_finished)
@@ -820,6 +838,10 @@ class MainWindow(QMainWindow):
         self._browser_kill_worker.finished.connect(self._browser_kill_worker.deleteLater)
         self._browser_kill_thread.finished.connect(self._browser_kill_thread.deleteLater)
         self._browser_kill_thread.start()
+
+    def _on_adopt_running_browser(self, exe: str) -> None:
+        """Start a web session for a permitted browser that was already open at launch."""
+        self._on_web_opened(exe)
 
     def _on_browser_kill_finished(self) -> None:
         self._web_request_timer_ready = True
@@ -1441,7 +1463,6 @@ class MainWindow(QMainWindow):
 
     def _open_pulse_dialog(self, pending) -> None:
         self._left_dock.start_prayer_session(self._build_prayer_session_names())
-        self._left_dock.retry_failed_diet_calories()
         self._left_dock.expand()
         self._handle_pulse_submit(
             pending,

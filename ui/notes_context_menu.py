@@ -62,6 +62,15 @@ class NotesContextMenuFilter(QObject):
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.ContextMenu and isinstance(obj, QWidget):
+            # Widgets flagged ``ownContextMenu`` (or whose parent is, e.g. a list's
+            # viewport) provide their own menu — let it through.
+            ancestor: QObject | None = obj
+            for _ in range(3):
+                if ancestor is None:
+                    break
+                if ancestor.property("ownContextMenu"):
+                    return False
+                ancestor = ancestor.parent()
             menu = QMenu(obj)
             add_action = menu.addAction("📝  Add Note")
             browse_action = menu.addAction("📂  Browse Notes")
