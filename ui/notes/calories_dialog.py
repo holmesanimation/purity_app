@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import traceback
-import uuid
 from typing import Any, Callable
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -135,7 +134,7 @@ class CaloriesDialog(NoteDialog):
             self._status_label.setText("Note text is empty.")
             return
 
-        context: dict[str, Any] = {"note_id": uuid.uuid4().hex, "revision_num": 1, "op": "create"}
+        context: dict[str, Any] = {}
         if self._selected_tags:
             context["tags"] = list(self._selected_tags)
         calories_text = self._calories_edit.text().strip()

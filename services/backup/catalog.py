@@ -16,9 +16,15 @@ from shane_common.preferences.paths import app_settings_path
 from services.settings_schemas import resolve_purity_data_root
 
 from .models import BackupSourceFamily
+from .retention import NOTES_DB_FAMILY, NOTES_EXPORT_FAMILY
+from .snapshot import newest_staged_export, newest_staged_snapshot
 
 # services/backup/catalog.py -> services/backup -> services -> purity_app
 _PURITY_APP_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _staged_paths(path: Path | None) -> list[Path]:
+    return [path] if path is not None else []
 
 
 def _family(name: str, candidate_paths: Iterable[Path], *, required: bool) -> BackupSourceFamily:
@@ -54,11 +60,16 @@ class PurityBackupCatalog:
     def discover(self) -> list[BackupSourceFamily]:
         data_root = self.resolve_data_root()
 
-        notes_dir = self._purity_app_root / "notes" / "PurityApp" / "default"
-        notes_paths = sorted(notes_dir.glob("*.jsonl")) if notes_dir.exists() else []
-
         families = [
-            _family("notes", notes_paths, required=True),
+            # The notes database is never copied live: the backup service first writes a
+            # verified, dated snapshot into the staging folder (see ``snapshot.py``), and
+            # these families point at the newest staged files.  Owners and subjects live in
+            # the same database, so there is no separate registry family.
+            _family(NOTES_DB_FAMILY, _staged_paths(newest_staged_snapshot(data_root)), required=True),
+            # Human-readable JSONL export of the verified snapshot: an independent last-resort copy.
+            _family(
+                NOTES_EXPORT_FAMILY, _staged_paths(newest_staged_export(data_root)), required=False
+            ),
             _family("bible_library", [data_root / "bible_library.json"], required=True),
             _family("bible_memorizing", [data_root / "bible_memorizing.json"], required=True),
             _family(

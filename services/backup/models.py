@@ -66,6 +66,15 @@ class RefreshResult:
     error: str | None = None
 
 
+@dataclass
+class PruneResult:
+    """Outcome of ``prune_family()`` on a backup destination."""
+
+    deleted: list[str] = field(default_factory=list)
+    kept: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class BackupSourceFamily:
     """One named group of source files discovered by ``PurityBackupCatalog``."""

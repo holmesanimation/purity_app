@@ -110,6 +110,7 @@
       #query-warn       { display: none; }
       #url-block        { display: none; }
       #blacklisted-block { display: none; }
+      #app-down-block   { display: none; }
 
       .actions {
         display: flex;
@@ -184,6 +185,15 @@
         <div class="url" id="blacklisted-url"></div>
         <div class="actions">
           <button id="blacklisted-back-btn" type="button">Go back</button>
+        </div>
+      </div>
+      <!-- Purity app not running -->
+      <div id="app-down-block">
+        <h1>App session is no longer active.</h1>
+        <p>The Purity app isn't running, so browsing is paused. Start the Purity app and a browsing session to continue.</p>
+        <div class="url" id="app-down-url"></div>
+        <div class="actions">
+          <button id="app-down-back-btn" type="button">Go back</button>
         </div>
       </div>
       <!-- No active session (default fallback) -->

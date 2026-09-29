@@ -25,10 +25,10 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from shane_common.processes.windows import has_visible_window, taskkill_processes
+from shane_common.processes.windows import has_visible_window
 from shane_common.watchdog.heartbeat_reader import HeartbeatReader
 from shane_common.watchdog.heartbeat_writer import HeartbeatWriter
 from shane_common.watchdog.process_launcher import ProcessLauncher, ProcessLaunchConfig
@@ -281,10 +281,12 @@ def main() -> int:
     poll_timer.start()
     QTimer.singleShot(0, _poll)
 
-    # --- Browser guard: kill chrome/msedge while purity_app isn't running ----
+    # --- Browser guard: warn when chrome/msedge opens while purity_app isn't running
     # purity_app-specific behavior; kept out of shane_common on purpose so
-    # other supervised apps don't inherit a "block these browsers" feature.
+    # other supervised apps don't inherit a "browser warning" feature.
+    # The browser is NOT closed; the extension blocks page loads on its own.
     _browser_state: dict[str, bool] = {exe: False for exe in _WATCHED_BROWSERS}
+    _browser_warning: dict[str, QMessageBox | None] = {"dlg": None}
 
     def _poll_browser_guard() -> None:
         _, mtime, exit_present = reader.read("purity_app")
@@ -297,14 +299,22 @@ def main() -> int:
         for exe in _WATCHED_BROWSERS:
             is_running = has_visible_window(exe)
             if is_running and not _browser_state[exe]:
-                _log_supervisor(data_root, f"Blocking {exe} — purity_app is not running.")
-                taskkill_processes([exe])
-                tray.showMessage(
-                    "Purity",
-                    f"{exe} was closed because the Purity App is not running.",
-                    QSystemTrayIcon.MessageIcon.Warning,
-                    5000,
-                )
+                _log_supervisor(data_root, f"Warning: {exe} is open while purity_app is not running.")
+                existing = _browser_warning["dlg"]
+                if existing is None or not existing.isVisible():
+                    # Non-modal so the poll timers keep running while it's open.
+                    dlg = QMessageBox()
+                    dlg.setIcon(QMessageBox.Icon.Warning)
+                    dlg.setWindowTitle("Purity App Not Running")
+                    dlg.setText("The Purity App is not running.")
+                    dlg.setInformativeText(
+                        f"{exe} is open, but no app session is active. "
+                        "Start the Purity App to browse."
+                    )
+                    dlg.addButton(QMessageBox.StandardButton.Ok)
+                    dlg.setWindowModality(Qt.WindowModality.NonModal)
+                    dlg.show()
+                    _browser_warning["dlg"] = dlg
             _browser_state[exe] = is_running
 
     browser_guard_timer = QTimer()

@@ -64,6 +64,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("blacklisted-back-btn").addEventListener("click", () => {
       if (history.length > 1) { history.back(); } else { window.close(); }
     });
+  } else if (reason === "app-down") {
+    // Purity app isn't running (local session server unreachable)
+    // The redirect rule embeds the URL unencoded after "&url=", so read it raw.
+    const rawUrl = window.location.hash.split("&url=").slice(1).join("&url=");
+    document.getElementById("app-down-block").style.display = "block";
+    document.getElementById("app-down-url").textContent = rawUrl;
+    document.getElementById("app-down-back-btn").addEventListener("click", () => {
+      if (history.length > 1) { history.back(); } else { window.close(); }
+    });
   } else {
     // No active session (default fallback)
     document.getElementById("url-block").style.display = "block";

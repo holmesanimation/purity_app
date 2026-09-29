@@ -1351,6 +1351,7 @@ class MainWindow(QMainWindow):
 
             if not self._supervisor_down_alerted:
                 self._supervisor_down_alerted = True
+                self._notify_supervisor_down_telegram()
                 self._show_supervisor_down_dialog()
 
         except Exception as exc:
@@ -1358,6 +1359,39 @@ class MainWindow(QMainWindow):
                 self._runtime.data_root,
                 f"_check_supervisor_heartbeat: unhandled exception: {exc}",
             )
+
+    def _notify_supervisor_down_telegram(self) -> None:
+        """Send a purity_supervisor.down Telegram alert without blocking the UI thread."""
+        import os
+        import threading
+        import urllib.parse
+        import urllib.request
+
+        if self._settings_manager is None:
+            return
+        token = os.environ.get("PURITY_TELEGRAM_TOKEN", "").strip()
+        chat_ids_str = str(self._settings_manager.get("app.telegram", "telegram_chat_ids") or "")
+        chat_ids = [c.strip() for c in chat_ids_str.split(",") if c.strip()]
+        if not token or not chat_ids:
+            return
+        text = "[WARNING] purity_supervisor.down\nscope=global\ndetails=reason=heartbeat.down"
+        data_root = self._runtime.data_root
+
+        def _send() -> None:
+            for chat_id in chat_ids:
+                try:
+                    params = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+                    req = urllib.request.Request(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        data=params, method="POST",
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        resp.read()
+                except Exception as exc:
+                    _append_startup_log(data_root, f"purity_supervisor.down telegram FAILED: chat_id={chat_id} error={exc}")
+
+        threading.Thread(target=_send, daemon=True).start()
 
     def _show_supervisor_down_dialog(self) -> None:
         """Show a warning dialog and offer to relaunch the supervisor."""

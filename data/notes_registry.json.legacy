@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "owners": [
+    {
+      "key": "books",
+      "label": "Books"
+    }
+  ],
+  "subjects": []
+}

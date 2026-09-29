@@ -42,8 +42,14 @@ from services.settings_schemas import (
 _WEEKDAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
+_FAMILY_LABELS = {
+    "notes_db": "Notes Database (dated snapshots)",
+    "notes_export": "Notes Export (readable JSONL copy)",
+}
+
+
 def _family_label(name: str) -> str:
-    return name.replace("_", " ").title()
+    return _FAMILY_LABELS.get(name) or name.replace("_", " ").title()
 
 
 class _FamilyPickerDialog(QtWidgets.QDialog):

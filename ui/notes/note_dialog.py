@@ -1,6 +1,7 @@
 # purity_app/ui/notes/note_dialog.py
 """Re-export from shane_common.ui.notes."""
 from shane_common.ui.notes.note_dialog import (  # noqa: F401
+    EditNoteDialog,
     NoteDialog,
     RowNoteDialog,
     _NoteCard,

@@ -73,7 +73,10 @@ function buildLocalhostAllowRule() {
   };
 }
 
-function buildBlockRule() {
+function buildBlockRule(appUnreachable) {
+  // The URL must stay last in the fragment: \0 is inserted unencoded, and
+  // blocked.js reads everything after "&url=" verbatim in the app-down case.
+  const fragment = appUnreachable ? "#reason=app-down&url=\\0" : "#url=\\0";
   return {
     id: BLOCK_RULE_ID,
     priority: 1,
@@ -82,7 +85,7 @@ function buildBlockRule() {
       redirect: {
         // \0 is the entire matched URL; this embeds it in the fragment so
         // blocked.html can read it directly without a service-worker round-trip.
-        regexSubstitution: chrome.runtime.getURL("blocked.html") + "#url=\\0"
+        regexSubstitution: chrome.runtime.getURL("blocked.html") + fragment
       }
     },
     condition: {
@@ -96,11 +99,12 @@ async function fetchSession() {
   try {
     const response = await fetch(SESSION_URL, { cache: "no-store" });
     if (!response.ok) {
-      return { is_active: false };
+      return { is_active: false, app_unreachable: true };
     }
     return await response.json();
   } catch {
-    return { is_active: false };
+    // Connection refused / timeout: the Purity app's local server isn't running.
+    return { is_active: false, app_unreachable: true };
   }
 }
 
@@ -129,7 +133,7 @@ function buildRules(session) {
   // localhost is always reachable (dev servers, local tools) regardless of session state.
   const rules = [buildLocalhostAllowRule()];
   if (!session.is_active) {
-    rules.push(buildBlockRule());
+    rules.push(buildBlockRule(session.app_unreachable === true));
   }
   return rules;
 }
@@ -142,15 +146,18 @@ async function replaceRules(rules) {
   });
 }
 
-// Rules only depend on session.is_active, so skip the (expensive) rule
-// replacement when the session state hasn't actually changed since last sync.
-let lastAppliedIsActive = null;
+// Rules only depend on session state (active / inactive / app unreachable), so
+// skip the (expensive) rule replacement when it hasn't changed since last sync.
+let lastAppliedRuleState = null;
 
 async function syncRulesFromSession() {
   currentSession = await fetchSession();
-  if (currentSession.is_active === lastAppliedIsActive) return;
+  const ruleState = currentSession.is_active
+    ? "active"
+    : currentSession.app_unreachable ? "app-down" : "inactive";
+  if (ruleState === lastAppliedRuleState) return;
   await replaceRules(buildRules(currentSession));
-  lastAppliedIsActive = currentSession.is_active;
+  lastAppliedRuleState = ruleState;
 }
 
 function updateFromSession() {
@@ -220,6 +227,9 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     return;
   }
   void sendHeartbeat();
+  // The MV3 worker may have been asleep while the app closed; resync before
+  // this navigation so the block rules reflect the current app state.
+  void updateFromSession();
   const approvedUrl = approvedSoftRiskSearchByTabId.get(details.tabId);
   approvedSoftRiskSearchByTabId.delete(details.tabId);
   if (approvedUrl === details.url) {

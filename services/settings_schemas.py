@@ -330,10 +330,21 @@ def get_backup_local_destination(settings_manager: SettingsManager) -> Path | No
     return Path(raw) if raw else None
 
 
+#: Backup families that were replaced by the notes database snapshot families.  A saved
+#: selection that still names them keeps meaning "back up my notes".
+_LEGACY_BACKUP_FAMILY_ALIASES: dict[str, tuple[str, ...]] = {
+    "notes": ("notes_db", "notes_export"),
+    "notes_registry": ("notes_db",),
+}
+
+
 def get_backup_selected_families(settings_manager: SettingsManager) -> set[str]:
     """Returns the persisted family selection. Empty means "all families"."""
     raw = settings_manager.get(_CATEGORY_ID, "backup_selected_families") or []
-    return {str(name) for name in raw}
+    selected: set[str] = set()
+    for name in raw:
+        selected.update(_LEGACY_BACKUP_FAMILY_ALIASES.get(str(name), (str(name),)))
+    return selected
 
 
 def set_backup_selected_families(settings_manager: SettingsManager, families: set[str]) -> None:

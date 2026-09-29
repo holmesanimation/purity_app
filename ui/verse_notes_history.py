@@ -8,6 +8,7 @@ from typing import Optional
 from PySide6.QtWidgets import QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
 from services.notes_setup import notes_repo
+from shane_common.notes.notes_repository import latest_revisions
 from styles.theme import COLOR_TEXT_MUTED, FONT_FAMILY, FONT_SIZE_SMALL
 
 _BIBLE_OWNER = "Bible"
@@ -46,7 +47,7 @@ class VerseNotesHistoryWidget(QWidget):
             return
         rows = [
             row
-            for row in self._repo.rows_for_owner(_BIBLE_OWNER)
+            for row in latest_revisions(self._repo.rows_for_owner(_BIBLE_OWNER))
             if any(
                 tagged.get("key") == self._ref_key
                 for tagged in (row.context.get("tagged_verses") or [])

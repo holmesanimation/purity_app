@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import traceback
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,8 +21,13 @@ from . import state
 from .catalog import PurityBackupCatalog
 from .destinations.local import LocalFilesystemDestination
 from .models import BackupCopyOutcome, BackupRunResult, FamilyResult, ManifestEntry, RefreshResult, RunStatus
+from .retention import DEFAULT_POLICY, NOTES_DB_FAMILY, NOTES_EXPORT_FAMILY, RetentionPolicy
+from .snapshot import SnapshotError, SnapshotInfo, prepare_notes_snapshot
 
 _MAX_COPY_ATTEMPTS = 3
+
+#: Families whose folders hold dated files and are pruned by the retention policy.
+_RETENTION_FAMILIES = (NOTES_DB_FAMILY, NOTES_EXPORT_FAMILY)
 
 
 class BackupValidationError(Exception):
@@ -56,9 +62,13 @@ class BackupService:
         *,
         settings_manager: SettingsManager,
         catalog: PurityBackupCatalog | None = None,
+        retention: RetentionPolicy = DEFAULT_POLICY,
+        snapshot_provider: Callable[[Path], SnapshotInfo | None] = prepare_notes_snapshot,
     ) -> None:
         self._settings_manager = settings_manager
         self._catalog = catalog or PurityBackupCatalog(settings_manager=settings_manager)
+        self._retention = retention
+        self._snapshot_provider = snapshot_provider
 
     def run(self, destination_root: Path, family_names: set[str] | None = None) -> BackupRunResult:
         destination_root = Path(destination_root)
@@ -66,13 +76,23 @@ class BackupService:
         started_at = datetime.now(timezone.utc).isoformat()
         data_root = resolve_purity_data_root(self._settings_manager)
 
+        snapshot: SnapshotInfo | None = None
         try:
             self._validate_destination(destination_root, data_root)
+            # The notes database is backed up as a verified point-in-time snapshot, made
+            # *before* anything is written to the destination.  If it fails, the whole run
+            # fails and the destination is left exactly as it was (nothing uploaded/pruned).
+            if family_names is None or NOTES_DB_FAMILY in family_names:
+                snapshot = self._snapshot_provider(data_root)
             families = self._catalog.discover()
             if family_names is not None:
                 families = [f for f in families if f.name in family_names]
         except BackupValidationError as exc:
             result = self._failed_result(run_id, started_at, str(exc))
+            state.append_run(data_root, result)
+            return result
+        except SnapshotError as exc:
+            result = self._failed_result(run_id, started_at, f"Notes snapshot failed: {exc}")
             state.append_run(data_root, result)
             return result
         except Exception as exc:  # noqa: BLE001 - reported below, not swallowed
@@ -124,6 +144,7 @@ class BackupService:
                     last_error = msg
             family_results.append(fr)
 
+        self._prune_retained_families(destination, family_results, snapshot, manifest)
         state.save_manifest(data_root, manifest)
 
         if failed_count and verified_count:
@@ -147,6 +168,41 @@ class BackupService:
         )
         state.append_run(data_root, result)
         return result
+
+    def _prune_retained_families(
+        self,
+        destination: LocalFilesystemDestination,
+        family_results: list[FamilyResult],
+        snapshot: SnapshotInfo | None,
+        manifest: dict[str, ManifestEntry],
+    ) -> None:
+        """Apply the retention policy — only to a family whose newest file just verified.
+
+        A family with any failed file, or with nothing verified this run, is never
+        pruned; the newest verified file is always protected.
+        """
+        protected = {
+            NOTES_DB_FAMILY: snapshot.name if snapshot is not None else None,
+            NOTES_EXPORT_FAMILY: snapshot.export_path.name if snapshot and snapshot.export_path else None,
+        }
+        for fr in family_results:
+            if fr.family_name not in _RETENTION_FAMILIES:
+                continue
+            if fr.files_failed or not fr.files_verified:
+                continue
+            try:
+                pruned = destination.prune_family(
+                    fr.family_name,
+                    self._retention,
+                    protect=[protected[fr.family_name]] if protected[fr.family_name] else (),
+                )
+            except Exception as exc:  # noqa: BLE001 - pruning must never fail the backup
+                traceback.print_exc()
+                fr.errors.append(f"retention prune skipped: {exc}")
+                continue
+            for name in pruned.deleted:
+                manifest.pop(f"{fr.family_name}/{name}", None)
+            fr.errors.extend(f"retention prune: {e}" for e in pruned.errors)
 
     def _failed_result(self, run_id: str, started_at: str, error: str) -> BackupRunResult:
         return BackupRunResult(

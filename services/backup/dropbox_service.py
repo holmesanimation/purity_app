@@ -43,6 +43,16 @@ from .models import (
     RefreshResult,
     RunStatus,
 )
+from .retention import (
+    DEFAULT_POLICY,
+    NOTES_DB_FAMILY,
+    NOTES_EXPORT_FAMILY,
+    RetentionPolicy,
+    parser_for_family,
+)
+
+#: Families whose folders hold dated files and are pruned by the retention policy.
+_RETENTION_FAMILIES = (NOTES_DB_FAMILY, NOTES_EXPORT_FAMILY)
 
 
 def _discover_local_backup_families(destination_root: Path) -> list[BackupSourceFamily]:
@@ -114,10 +124,12 @@ class DropboxBackupService:
         settings_manager: SettingsManager,
         catalog: PurityBackupCatalog | None = None,
         credential_store: DropboxCredentialStore | None = None,
+        retention: RetentionPolicy = DEFAULT_POLICY,
     ) -> None:
         self._settings_manager = settings_manager
         self._catalog = catalog or PurityBackupCatalog(settings_manager=settings_manager)
         self._credential_store = credential_store or DropboxCredentialStore()
+        self._retention = retention
 
     def run(self) -> BackupRunResult:
         run_id = uuid.uuid4().hex
@@ -200,6 +212,9 @@ class DropboxBackupService:
                     last_error = msg
             family_results.append(fr)
 
+        if self._prune_retained_families(destination, families, family_results, manifest):
+            auth_invalidated = True
+
         state.save_dropbox_manifest(data_root, manifest)
 
         if auth_invalidated:
@@ -226,6 +241,45 @@ class DropboxBackupService:
         )
         state.append_dropbox_run(data_root, result)
         return result
+
+    def _prune_retained_families(
+        self,
+        destination: DropboxDestination,
+        families: list[BackupSourceFamily],
+        family_results: list[FamilyResult],
+        manifest: dict[str, ManifestEntry],
+    ) -> bool:
+        """Apply the retention policy on Dropbox — only to a family whose files all uploaded.
+
+        Returns True if Dropbox rejected the credential while pruning.  The newest local
+        file of the family (the one just uploaded and verified) is always protected.
+        """
+        local = {f.name: f for f in families}
+        for fr in family_results:
+            if fr.family_name not in _RETENTION_FAMILIES:
+                continue
+            if fr.files_failed or not fr.files_verified:
+                continue
+            parse = parser_for_family(fr.family_name)
+            names = [p.name for p in local[fr.family_name].paths if parse(p.name) is not None]
+            newest = max(names, key=lambda n: (parse(n), n), default=None)
+            try:
+                pruned = destination.prune_family(
+                    fr.family_name,
+                    self._retention,
+                    protect=[newest] if newest else (),
+                )
+            except DropboxAuthInvalidError as exc:
+                fr.errors.append(f"retention prune skipped: dropbox auth invalid: {exc}")
+                return True
+            except Exception as exc:  # noqa: BLE001 - pruning must never fail the backup
+                traceback.print_exc()
+                fr.errors.append(f"retention prune skipped: {exc}")
+                continue
+            for name in pruned.deleted:
+                manifest.pop(f"{fr.family_name}/{name}", None)
+            fr.errors.extend(f"retention prune: {e}" for e in pruned.errors)
+        return False
 
     def _failed_result(self, run_id: str, started_at: str, error: str) -> BackupRunResult:
         return BackupRunResult(

@@ -3,6 +3,45 @@
 Companion to
 [2026-09-15_Purity_App_Local_and_Dropbox_Backup_Implementation_Plan_v1_0.md](./2026-09-15_Purity_App_Local_and_Dropbox_Backup_Implementation_Plan_v1_0.md).
 
+## 2026-09-29 — Notes moved to SQLite; backup now takes dated, verified snapshots (COMPLETE)
+
+Notes, owners, subjects and correlations now live in one SQLite file
+(`<data_root>/data/notes.db`); see
+[../02_TODO/2026-09-29_Notes_SQLite_Migration_Plan.md](../02_TODO/2026-09-29_Notes_SQLite_Migration_Plan.md).
+What changed for backup:
+
+- **The live `.db` (and `-wal` / `-shm`) is never copied.** Each run first calls
+  `services/backup/snapshot.py::prepare_notes_snapshot`: SQLite's online backup API
+  writes a point-in-time copy into `<data_root>/_system/purity/backup/staging/`, which is
+  then verified (`integrity_check`, `foreign_key_check`, schema version, row counts and
+  `write_seq` equal to the source's, readable through `NotesStore`). A snapshot that fails
+  verification **fails the whole run** and nothing is uploaded, refreshed or pruned.
+- **Unchanged database → no new snapshot.** `meta.write_seq` is compared with the value
+  recorded in `notes_snapshot.json`; if equal, the previous staged snapshot is reused.
+- **Dated files, never overwritten.** Snapshots are `notes_db/notes-YYYYMMDDTHHMMSSZ.db`
+  (names strictly increase, so two runs on one day give two files). The `notes` and
+  `notes_registry` families are gone; `notes_db` (required) and `notes_export`
+  (`notes-export-YYYYMMDD.jsonl`, a readable copy written from the verified snapshot,
+  optional) replace them. A saved "Protected Data" selection that still names the old
+  families is mapped onto the new ones.
+- **Retention** (`services/backup/retention.py`, `prune_family()` on the local and Dropbox
+  destinations): newest 14 + newest of each of the last 12 calendar months, only files
+  matching the dated-name pattern, the just-verified snapshot always protected, and only
+  after that family's files all verified. Local deletes unlink; Dropbox uses
+  `files_delete_v2` (recoverable from Dropbox's deleted-files view). A prune error never
+  fails the backup.
+- **Restore / recovery drill:** `restore.py::_check_notes_db` opens the newest restored
+  snapshot read-only and runs the same verification, so a drill now proves the restored
+  database is usable, not only byte-identical. `health.py` and the recovery-drill code had
+  no per-family assumptions and needed no change.
+- The live database must not sit in a cloud-synced folder; `services/notes_setup.py` warns
+  at import if `data_root` looks like one, and destinations inside `data_root` (which
+  includes the database folder) were already refused.
+
+Tests: `tests/backup/test_notes_snapshot.py`, `test_retention.py`,
+`test_service_notes_snapshot.py`, `test_dropbox_service_notes.py`, and the rewritten
+`test_catalog.py` / `test_restore.py`.
+
 ## 2026-09-23 — Post-P6 — Monthly Disaster Recovery Drill workflow (COMPLETE)
 
 P6 (restore proof) was already complete and is unchanged in behavior/criteria

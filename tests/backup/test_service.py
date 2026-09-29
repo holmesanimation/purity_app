@@ -7,22 +7,19 @@ from services.backup.models import RunStatus
 from services.backup.service import BackupService
 from services.backup.state import load_state
 from services.settings_schemas import build_purity_settings_manager
+from tests.backup._notes import add_note
 
 
 def _build_source_tree(tmp_path: Path) -> tuple[Path, Path]:
     data_root = tmp_path / "data_root"
     purity_app_root = tmp_path / "purity_app"
 
-    notes_dir = purity_app_root / "notes" / "PurityApp" / "default"
-    notes_dir.mkdir(parents=True)
-    (notes_dir / "purity.jsonl").write_text('{"a": 1}', encoding="utf-8")
+    add_note(data_root, "first note")
 
     (purity_app_root / "data").mkdir(parents=True)
     (purity_app_root / "data" / "tags.json").write_text('{"tags": ["x"]}', encoding="utf-8")
 
-    data_root.mkdir(parents=True)
     (data_root / "bible_library.json").write_text('{"b": 1}', encoding="utf-8")
-    (data_root / "data").mkdir(parents=True)
     (data_root / "data" / "prayer_recipients.json").write_text("{}", encoding="utf-8")
     (data_root / "data" / "prayer_prayed.json").write_text("{}", encoding="utf-8")
 
@@ -56,7 +53,8 @@ def test_run_copies_and_verifies_all_families(tmp_path: Path) -> None:
     assert (destination_root / "bible_library" / "bible_library.json").read_text(
         encoding="utf-8"
     ) == '{"b": 1}'
-    assert (destination_root / "notes" / "purity.jsonl").exists()
+    assert len(list((destination_root / "notes_db").glob("notes-*.db"))) == 1
+    assert len(list((destination_root / "notes_export").glob("notes-export-*.jsonl"))) == 1
     assert (destination_root / "tag_library" / "tags.json").exists()
 
     history = load_state(data_root)

@@ -22,9 +22,12 @@ from posixpath import join as posix_join
 
 import dropbox
 from dropbox.exceptions import ApiError, AuthError
-from dropbox.files import GetMetadataError, WriteMode
+from dropbox.files import GetMetadataError, ListFolderError, WriteMode
 
-from ..models import BackupCopyOutcome, ManifestEntry, RefreshResult
+from collections.abc import Iterable
+
+from ..models import BackupCopyOutcome, ManifestEntry, PruneResult, RefreshResult
+from ..retention import DEFAULT_POLICY, RetentionPolicy, plan_prune
 
 _BLOCK_SIZE = 4 * 1024 * 1024  # Dropbox content-hash block size
 
@@ -55,6 +58,56 @@ class DropboxDestination:
 
     def manifest_key(self, family_name: str, source_path: Path) -> str:
         return f"{family_name}/{Path(source_path).name}"
+
+    def _list_family_names(self, family_name: str) -> list[str]:
+        folder = posix_join(self._remote_folder, family_name)
+        try:
+            listing = self._client.files_list_folder(folder)
+        except ApiError as exc:
+            if (
+                isinstance(exc.error, ListFolderError)
+                and exc.error.is_path()
+                and exc.error.get_path().is_not_found()
+            ):
+                return []
+            raise
+        entries = list(listing.entries)
+        while listing.has_more:
+            listing = self._client.files_list_folder_continue(listing.cursor)
+            entries.extend(listing.entries)
+        return [e.name for e in entries if isinstance(e, dropbox.files.FileMetadata)]
+
+    def prune_family(
+        self,
+        family_name: str,
+        policy: RetentionPolicy = DEFAULT_POLICY,
+        *,
+        protect: Iterable[str] = (),
+        now: "datetime | None" = None,
+    ) -> PruneResult:
+        """Delete dated files under ``<remote>/<family_name>/`` that the policy drops.
+
+        Same rules as the local destination.  Deletion uses ``files_delete_v2``, so
+        removed files stay recoverable from Dropbox's deleted-files view.  Call this
+        only after the newest file has been uploaded **and verified**.
+        """
+        result = PruneResult()
+        try:
+            names = self._list_family_names(family_name)
+        except AuthError as exc:
+            raise DropboxAuthInvalidError(str(exc)) from exc
+        keep, delete = plan_prune(family_name, names, policy, protect=protect, now=now)
+        result.kept = keep
+        for name in delete:
+            try:
+                self._client.files_delete_v2(posix_join(self._remote_folder, family_name, name))
+                result.deleted.append(name)
+            except AuthError as exc:
+                raise DropboxAuthInvalidError(str(exc)) from exc
+            except ApiError as exc:
+                result.errors.append(f"{name}: {exc}")
+                result.kept.append(name)
+        return result
 
     def _remote_content_hash(self, remote_path: str) -> str | None:
         try:

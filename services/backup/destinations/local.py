@@ -30,7 +30,10 @@ from pathlib import Path
 from shane_common.runtime.transfer.copy import CopyOutcome, CopyVerifyResult, copy_file_verified
 from shane_common.runtime.transfer.hashing import sha256_file
 
-from ..models import BackupCopyOutcome, ManifestEntry, RefreshResult
+from collections.abc import Iterable
+
+from ..models import BackupCopyOutcome, ManifestEntry, PruneResult, RefreshResult
+from ..retention import DEFAULT_POLICY, RetentionPolicy, plan_prune
 
 
 class LocalFilesystemDestination:
@@ -40,6 +43,36 @@ class LocalFilesystemDestination:
     @property
     def root(self) -> Path:
         return self._root
+
+    def prune_family(
+        self,
+        family_name: str,
+        policy: RetentionPolicy = DEFAULT_POLICY,
+        *,
+        protect: Iterable[str] = (),
+        now: datetime | None = None,
+    ) -> PruneResult:
+        """Delete dated files in ``<root>/<family_name>/`` that the retention policy drops.
+
+        Only files matching the family's dated-name pattern are considered; the
+        newest file and everything in *protect* are always kept.  Call this only
+        after the newest file has been copied **and verified**.
+        """
+        result = PruneResult()
+        family_dir = self._root / family_name
+        if not family_dir.is_dir():
+            return result
+        names = [p.name for p in family_dir.iterdir() if p.is_file()]
+        keep, delete = plan_prune(family_name, names, policy, protect=protect, now=now)
+        result.kept = keep
+        for name in delete:
+            try:
+                (family_dir / name).unlink()
+                result.deleted.append(name)
+            except OSError as exc:
+                result.errors.append(f"{name}: {exc}")
+                result.kept.append(name)
+        return result
 
     def target_path(self, family_name: str, source_path: Path) -> Path:
         return self._root / family_name / Path(source_path).name

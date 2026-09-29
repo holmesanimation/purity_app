@@ -39,7 +39,7 @@ from shane_common.watchdog.heartbeat_reader import HeartbeatReader
 from services.browser_session import BrowserSessionManager, ExtensionHeartbeatMonitor
 from services.browser_session_watcher import BrowserSessionWatcher
 from services.mock_state import MockAppState
-from services.notes_setup import make_notes_writer, notes_writer, notes_repo
+from services.notes_setup import notes_writer, notes_repo
 from services.panic_session import PanicSession, PanicSessionOutcome, PanicSessionState
 from services.pulse_activity import UserActivityMonitor
 from services.pulse_manager import PulseManager
@@ -113,6 +113,7 @@ _CHROME_PATHS = [
 ]
 
 _EXTENSION_HEARTBEAT_GRACE_SECONDS = 0.0
+_EXTENSION_LAUNCH_GRACE_SECONDS = 10
 _UI_TIMER_LAG_THRESHOLD_MS = 50.0
 
 # ---------------------------------------------------------------------------
@@ -290,10 +291,6 @@ class MainWindow(QMainWindow):
 
         self._apply_live_settings_from_manager()
         _log_init_step("_apply_live_settings_from_manager done")
-
-        if self._runtime is not None:
-            self._pulse_notes_writer = make_notes_writer(run_id=self._runtime.session.run_id)
-        _log_init_step("make_notes_writer done")
 
         # Log normalizer sink — register before _build_ui so the sink is ready.
         self._log_sink = PurityLogNormalizerSink()
@@ -1288,11 +1285,44 @@ class MainWindow(QMainWindow):
             append_web_request_log(
                 self._runtime.data_root,
                 "extension_heartbeat.launch_check_failed",
-                "Extension not detected 5 seconds after Chrome opened — starting warning countdown.",
+                "Extension not detected 5 seconds after Chrome opened — asking user for grace period.",
                 level="WARN",
             )
-        if not self._web_timer_pill.is_warning_active:
-            self._web_timer_pill.start_extension_warning(30)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Purity Extension Not Enabled")
+        box.setText(
+            "The Purity extension isn't enabled, so Chrome is about to be closed.\n\n"
+            "Do you need 10 more seconds to enable it?"
+        )
+        more_time = box.addButton("OK (10 more seconds)", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Close Chrome now", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(more_time)
+        box.exec()
+        if box.clickedButton() is not more_time:
+            self._on_extension_launch_grace_expired()
+            return
+        # Grace suppresses the periodic heartbeat enforcement while we wait.
+        self._web_session_heartbeat_grace_deadline = (
+            time.monotonic() + _EXTENSION_LAUNCH_GRACE_SECONDS
+        )
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._on_extension_launch_grace_expired)
+        timer.start(_EXTENSION_LAUNCH_GRACE_SECONDS * 1000)
+        self._extension_launch_check_timer = timer
+
+    def _on_extension_launch_grace_expired(self) -> None:
+        self._extension_launch_check_timer = None
+        if not self._web_timer_pill.isVisible():
+            return  # session already ended while the dialog/timer was pending
+        self._web_session_heartbeat_grace_deadline = None
+        if self._extension_heartbeat_monitor is None or self._extension_heartbeat_monitor.is_healthy():
+            return
+        self._stop_browser_session_for_extension_failure(
+            message="The Chrome enforcement extension was not enabled. The browser session was ended.",
+            log_event="extension_heartbeat.launch_grace_expired",
+        )
 
     def _extension_heartbeat_grace_active(self) -> bool:
         deadline = self._web_session_heartbeat_grace_deadline

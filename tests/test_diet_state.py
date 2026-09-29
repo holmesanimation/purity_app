@@ -2,6 +2,7 @@ import time
 from types import SimpleNamespace
 
 from services.diet_state import DietState, calories_today_from_notes
+from shane_common.notes.model import NoteRow
 
 
 def test_diet_state_round_trip(tmp_path):
@@ -18,12 +19,12 @@ def test_diet_state_round_trip(tmp_path):
 
 
 def _row(ts, note_id, rev, calories, wall_ts=None):
-    ctx = {"note_id": note_id, "revision_num": rev}
+    ctx = {}
     if calories is not None:
         ctx["calories"] = calories
-    return SimpleNamespace(
+    return NoteRow(
         ts=ts, wall_ts=time.time() if wall_ts is None else wall_ts,
-        context=ctx, note_id=None, revision_num=None,
+        context=ctx, note_id=note_id, revision_num=rev, op="create" if rev == 1 else "edit",
     )
 
 

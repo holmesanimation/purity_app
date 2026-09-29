@@ -28,6 +28,8 @@ from shane_common.runtime.transfer.copy import copy_file_verified
 from shane_common.runtime.transfer.hashing import sha256_file
 
 from . import state
+from .retention import NOTES_DB_FAMILY, NOTES_EXPORT_FAMILY, parse_export_time, parse_snapshot_time
+from .snapshot import SnapshotError, verify_snapshot_file
 
 _RESTORE_STATE_RELATIVE_PATH = ("_system", "purity", "backup", "restore_state.json")
 _DEFAULT_MAX_HISTORY = 20
@@ -120,19 +122,40 @@ def _check_single_yaml(family_dir: Path) -> None:
     yaml.safe_load(files[0].read_text(encoding="utf-8"))
 
 
-def _check_notes(family_dir: Path) -> None:
-    files = sorted(family_dir.glob("*.jsonl"))
+def _check_notes_db(family_dir: Path) -> None:
+    """Open the newest restored snapshot read-only and prove the data is usable.
+
+    Runs ``integrity_check`` / ``foreign_key_check``, checks ``schema_version``, and
+    reads owners, subjects and a sample of notes through ``NotesStore``.  Every
+    snapshot in the folder was already hash-verified when it was copied.
+    """
+    snapshots = sorted(
+        (p for p in family_dir.iterdir() if p.is_file() and parse_snapshot_time(p.name) is not None),
+        key=lambda p: (parse_snapshot_time(p.name), p.name),
+    )
+    if not snapshots:
+        raise ValueError("no notes snapshot present to verify")
+    try:
+        verify_snapshot_file(snapshots[-1])
+    except SnapshotError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _check_notes_export(family_dir: Path) -> None:
+    files = sorted(p for p in family_dir.iterdir() if p.is_file() and parse_export_time(p.name) is not None)
     if not files:
-        raise ValueError("no notes files present to verify")
-    for jsonl_path in files:
-        for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                json.loads(line)
+        raise ValueError("no notes export present to verify")
+    for line in files[-1].read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict) or "kind" not in row:
+            raise ValueError(f"{files[-1].name}: every line must be a JSON object with a 'kind'")
 
 
 _CONTENT_CHECKS = {
-    "notes": _check_notes,
+    NOTES_DB_FAMILY: _check_notes_db,
+    NOTES_EXPORT_FAMILY: _check_notes_export,
     "bible_library": _check_single_json,
     "bible_memorizing": _check_single_json,
     "prayer_recipients": _check_single_json,

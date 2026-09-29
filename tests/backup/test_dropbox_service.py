@@ -8,6 +8,7 @@ from services.backup.models import DropboxAuthState, RunStatus
 from services.backup.service import BackupService
 from services.backup.state import load_state
 from services.settings_schemas import build_purity_settings_manager
+from tests.backup._notes import add_note
 
 
 class _FakeSecretStore:
@@ -54,14 +55,10 @@ def test_auth_state_ready_with_valid_refresh_token(tmp_path: Path) -> None:
 def test_dropbox_auth_failure_does_not_affect_local_backup_state(tmp_path: Path) -> None:
     data_root = tmp_path / "data_root"
     purity_app_root = tmp_path / "purity_app"
-    notes_dir = purity_app_root / "notes" / "PurityApp" / "default"
-    notes_dir.mkdir(parents=True)
-    (notes_dir / "purity.jsonl").write_text('{"a": 1}', encoding="utf-8")
+    add_note(data_root, "a note")
     (purity_app_root / "data").mkdir(parents=True)
     (purity_app_root / "data" / "tags.json").write_text('{"tags": ["x"]}', encoding="utf-8")
-    data_root.mkdir(parents=True)
     (data_root / "bible_library.json").write_text('{"b": 1}', encoding="utf-8")
-    (data_root / "data").mkdir(parents=True)
     (data_root / "data" / "prayer_recipients.json").write_text("{}", encoding="utf-8")
     (data_root / "data" / "prayer_prayed.json").write_text("{}", encoding="utf-8")
 

@@ -32,6 +32,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPixma
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -52,9 +53,18 @@ from services.bible_canon import BOOK_KEYS, CANON, display_ref, normalize_ref
 from services.diet_state import DietState, calories_today_from_notes
 from services.fake_journal import FakeJournalService
 from services.mock_state import MockAppState
-from services.notes_setup import bible_notes_writer, journal_notes_writer, notes_repo, prayer_notes_writer as _default_prayer_notes_writer
+from services.notes_setup import (
+    bible_notes_writer,
+    journal_notes_writer,
+    notes_registry,
+    notes_repo,
+    prayer_notes_writer as _default_prayer_notes_writer,
+    writer_for_owner,
+)
 from services.tag_library import TagLibrary
-from shane_common.notes.notes_writer import NoteType
+from shane_common.notes.notes_repository import latest_revisions
+from shane_common.notes.notes_writer import UNSET_SUBJECT, NoteType
+from shane_common.ui.notes.subject_picker import show_subject_picker, subject_button_text
 from models.journal import JournalEntry
 from styles.theme import (
     COLOR_ACCENT,
@@ -456,7 +466,7 @@ class _DashboardPrayerCard(QFrame):
     def _rows_for_recipient(self, name: str) -> list:
         return [
             row
-            for row in notes_repo.rows_for_owner("Prayer")
+            for row in latest_revisions(notes_repo.rows_for_owner("Prayer"))
             if name in (row.context.get("tags") or [])
         ]
 
@@ -609,6 +619,45 @@ class _TagPickerPopup(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Owner dropdown (re-reads the registry each time it opens)
+# ---------------------------------------------------------------------------
+
+class _OwnerCombo(QComboBox):
+    """Combo of every owner in the notes registry.
+
+    Owners can be created in the Notes Browser while the dashboard is open, so
+    the list is reloaded from the registry each time the dropdown opens.
+    """
+
+    def __init__(self, registry, current_key: str, parent=None) -> None:
+        super().__init__(parent)
+        self._registry = registry
+        self.reload(current_key)
+
+    def reload(self, current_key: str | None = None) -> None:
+        current_key = current_key if current_key is not None else self.current_key()
+        self.blockSignals(True)
+        self.clear()
+        keys: list[str] = []
+        for owner in self._registry.owners():
+            self.addItem(owner.label, owner.key)
+            keys.append(owner.key)
+        if current_key and current_key not in keys:
+            # e.g. a writer whose owner is not registered — keep it selectable.
+            self.addItem(current_key, current_key)
+        idx = self.findData(current_key)
+        self.setCurrentIndex(idx if idx >= 0 else 0)
+        self.blockSignals(False)
+
+    def current_key(self) -> str:
+        return self.currentData() or ""
+
+    def showPopup(self) -> None:  # noqa: N802
+        self.reload()
+        super().showPopup()
+
+
+# ---------------------------------------------------------------------------
 # Hover-tracking label (pauses dashboard topmost-raise during tooltip display)
 # ---------------------------------------------------------------------------
 
@@ -676,6 +725,9 @@ class _FreeJournalWidget(QWidget):
         self._tag_popup: Optional[QWidget] = None
         self._hovering_verse: bool = False
         self._tag_prayer_btn: Optional[QPushButton] = None
+        self._registry = notes_registry
+        self._subject: str = UNSET_SUBJECT
+        self._subject_popup: Optional[QWidget] = None
 
         vbox = QVBoxLayout(self)
         vbox.setContentsMargins(12, 12, 12, 12)
@@ -686,6 +738,32 @@ class _FreeJournalWidget(QWidget):
             f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_SMALL}pt; background: transparent;"
         )
         vbox.addWidget(self._free_timestamp_lbl)
+
+        # Owner dropdown | Subject button
+        owner_row = QHBoxLayout()
+        owner_row.setContentsMargins(0, 0, 0, 0)
+        owner_row.setSpacing(6)
+        owner_lbl = QLabel("Owner")
+        owner_lbl.setStyleSheet(
+            f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_SMALL}pt;"
+            f"font-weight: 600; background: transparent;"
+        )
+        owner_row.addWidget(owner_lbl)
+        self._owner_combo = _OwnerCombo(
+            self._registry, getattr(self._notes_writer, "_owner", "journal")
+        )
+        self._owner_combo.currentIndexChanged.connect(self._on_owner_changed)
+        owner_row.addWidget(self._owner_combo)
+        self._subject_btn = QPushButton(subject_button_text(self._registry, self._subject))
+        self._subject_btn.setToolTip("Choose a subject for this entry")
+        self._subject_btn.clicked.connect(self._open_subject_picker)
+        owner_row.addWidget(self._subject_btn)
+        owner_row.addStretch()
+        vbox.addLayout(owner_row)
+
+        self._title_edit = QLineEdit()
+        self._title_edit.setPlaceholderText("Title (optional)")
+        vbox.addWidget(self._title_edit)
 
         self._free_input = QTextEdit()
         self._free_input.setPlaceholderText("Write freely…")
@@ -877,7 +955,7 @@ class _FreeJournalWidget(QWidget):
         owner = self._notes_writer._owner
         return [
             row
-            for row in notes_repo.rows_for_owner(owner)
+            for row in latest_revisions(notes_repo.rows_for_owner(owner))
             if any(tagged.get("key") in keys for tagged in (row.context.get("tagged_verses") or []))
         ]
 
@@ -967,6 +1045,32 @@ class _FreeJournalWidget(QWidget):
         self._selected_tags = tags
         self._rebuild_tags_display()
 
+    # -- Owner / subject ---------------------------------------------------
+
+    def _on_owner_changed(self) -> None:
+        key = self._owner_combo.current_key()
+        if not key:
+            return
+        self._notes_writer = writer_for_owner(key)
+        # A subject scoped to another owner does not carry over.
+        if not self._registry.subject_available_for(self._subject, key):
+            self._set_subject(UNSET_SUBJECT)
+        self._update_view_notes_button()
+
+    def _open_subject_picker(self) -> None:
+        self._subject_popup = show_subject_picker(
+            self._subject_btn,
+            self._registry,
+            self._owner_combo.current_key(),
+            self._subject,
+            self._set_subject,
+            above=True,
+        )
+
+    def _set_subject(self, subject_id: str) -> None:
+        self._subject = subject_id
+        self._subject_btn.setText(subject_button_text(self._registry, subject_id))
+
     # -- Save ----------------------------------------------------------
 
     def _save_free(self) -> None:
@@ -993,14 +1097,23 @@ class _FreeJournalWidget(QWidget):
             tags.extend(ref["display"] for ref in combined_refs if ref.get("display"))
         if tags:
             ctx["tags"] = tags
+        # "Tag Prayer Recipient" redirects the note to the Prayer owner; a subject
+        # that Prayer cannot use (scoped to another owner) is saved as UNSET.
+        subject = self._subject
+        if not self._registry.subject_available_for(subject, getattr(writer, "_owner", "")):
+            subject = UNSET_SUBJECT
         note = writer.build_note(
             note_type=NoteType.GENERAL,
             text=text,
             context=ctx,
+            title=self._title_edit.text(),
+            subject=subject,
         )
         writer.commit(note)
         if self._tag_prayer_btn is not None:
             self._tag_prayer_btn.setChecked(False)
+        self._title_edit.clear()
+        self._set_subject(UNSET_SUBJECT)
         self._free_input.clear()
         self._free_timestamp_lbl.setText(self._now_str())
         self._tagged_refs = []
